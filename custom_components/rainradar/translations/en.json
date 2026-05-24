@@ -8,7 +8,7 @@
           "name": "Location name",
           "latitude": "Latitude",
           "longitude": "Longitude",
-          "device_tracker": "Device tracker (optional)",
+          "device_tracker": "Device tracker entity ID (optional)",
           "scan_interval": "Update interval (seconds)"
         }
       }
@@ -22,8 +22,7 @@
       "init": {
         "title": "Rainradar Options",
         "data": {
-          "locations": "Locations (name, lat, lon)",
-          "device_tracker": "Device tracker",
+          "device_tracker": "Device tracker entity ID",
           "scan_interval": "Update interval (seconds)"
         }
       }

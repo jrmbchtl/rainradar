@@ -8,7 +8,7 @@
           "name": "Standortname",
           "latitude": "Breitengrad",
           "longitude": "Längengrad",
-          "device_tracker": "Gerätetracker (optional)",
+          "device_tracker": "Gerätetracker-Entity-ID (optional)",
           "scan_interval": "Aktualisierungsintervall (Sekunden)"
         }
       }
@@ -22,8 +22,7 @@
       "init": {
         "title": "Rainradar Optionen",
         "data": {
-          "locations": "Standorte (Name, Breite, Länge)",
-          "device_tracker": "Gerätetracker",
+          "device_tracker": "Gerätetracker-Entity-ID",
           "scan_interval": "Aktualisierungsintervall (Sekunden)"
         }
       }

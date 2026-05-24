@@ -5,10 +5,8 @@
         "title": "Rainradar",
         "description": "Configure your rain radar location.",
         "data": {
-          "name": "Location name",
-          "latitude": "Latitude",
-          "longitude": "Longitude",
-          "device_tracker": "Device tracker entity ID (optional)",
+          "zones": "Zones",
+          "device_trackers": "Device trackers",
           "scan_interval": "Update interval (seconds)"
         }
       }
@@ -22,7 +20,8 @@
       "init": {
         "title": "Rainradar Options",
         "data": {
-          "device_tracker": "Device tracker entity ID",
+          "zones": "Zones",
+          "device_trackers": "Device trackers",
           "scan_interval": "Update interval (seconds)"
         }
       }

@@ -21,6 +21,8 @@ from .const import (
     CONF_LONGITUDE,
     CONF_SCAN_INTERVAL,
     CONF_DEVICE_TRACKER,
+    CONF_DEVICE_TRACKERS,
+    CONF_ZONES,
     CONF_TRACKED_LOCATION_NAME,
     DEFAULT_SCAN_INTERVAL,
     DWD_OPENDATA,
@@ -73,6 +75,16 @@ class RainradarCoordinator(DataUpdateCoordinator):
     @property
     def session(self) -> aiohttp.ClientSession:
         return self._session
+
+    @staticmethod
+    def _normalize_entity_list(value: object) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        if isinstance(value, list):
+            return [item for item in value if isinstance(item, str)]
+        return []
 
     async def _get_zip_text(self, product: str, station_id: str) -> str | None:
         path, _, _ = CDC_PRODUCTS[product]
@@ -163,28 +175,64 @@ class RainradarCoordinator(DataUpdateCoordinator):
                 self.stations = await fetch_stations(self.session)
                 _LOGGER.info("Loaded %d DWD stations", len(self.stations))
 
-            station_map: dict[str, DWDStation] = {}
-            for loc in self.locations:
-                lat = loc.get(CONF_LATITUDE)
-                lon = loc.get(CONF_LONGITUDE)
-                if lat is not None and lon is not None:
-                    nearest = find_nearest_station(lat, lon, self.stations)
-                    if nearest is not None:
-                        station_map[loc.get(CONF_NAME, "unknown")] = nearest
+            station_map: dict[str, tuple[str, str, DWDStation]] = {}
+            zone_entities = self._normalize_entity_list(self.entry.options.get(CONF_ZONES))
+            if not zone_entities:
+                for loc in self.locations:
+                    lat = loc.get(CONF_LATITUDE)
+                    lon = loc.get(CONF_LONGITUDE)
+                    if lat is not None and lon is not None:
+                        nearest = find_nearest_station(lat, lon, self.stations)
+                        if nearest is not None:
+                            loc_name = loc.get(CONF_NAME, "unknown")
+                            station_map[loc_name] = (loc_name, "manual", nearest)
 
-            device_tracker = self.entry.options.get(CONF_DEVICE_TRACKER)
-            if device_tracker:
-                tracker_state = self.hass.states.get(device_tracker)
+            for zone_entity in zone_entities:
+                zone_state = self.hass.states.get(zone_entity)
+                if zone_state is None:
+                    continue
+                zlat = zone_state.attributes.get(CONF_LATITUDE)
+                zlon = zone_state.attributes.get(CONF_LONGITUDE)
+                if zlat is None or zlon is None:
+                    continue
+                zone_name = zone_state.attributes.get("friendly_name", zone_entity)
+                znearest = find_nearest_station(float(zlat), float(zlon), self.stations)
+                if znearest is not None:
+                    station_map[f"zone::{zone_entity}"] = (
+                        zone_name,
+                        zone_entity,
+                        znearest,
+                    )
+
+            tracker_entities = self._normalize_entity_list(
+                self.entry.options.get(CONF_DEVICE_TRACKERS)
+            )
+            if not tracker_entities:
+                tracker_entities = self._normalize_entity_list(
+                    self.entry.options.get(CONF_DEVICE_TRACKER)
+                )
+
+            for tracker_entity in tracker_entities:
+                tracker_state = self.hass.states.get(tracker_entity)
                 if tracker_state is not None:
                     tlat = tracker_state.attributes.get("latitude")
                     tlon = tracker_state.attributes.get("longitude")
                     if tlat is not None and tlon is not None:
-                        tname = self.entry.options.get(CONF_TRACKED_LOCATION_NAME, "Tracked")
+                        tname = tracker_state.attributes.get("friendly_name", tracker_entity)
+                        if not isinstance(tname, str):
+                            tname = self.entry.options.get(
+                                CONF_TRACKED_LOCATION_NAME,
+                                tracker_entity,
+                            )
                         tnearest = find_nearest_station(tlat, tlon, self.stations)
                         if tnearest is not None:
-                            station_map[tname] = tnearest
+                            station_map[f"tracker::{tracker_entity}"] = (
+                                tname,
+                                tracker_entity,
+                                tnearest,
+                            )
 
-            station_ids = list({s.station_id for s in station_map.values()})
+            station_ids = list({entry[2].station_id for entry in station_map.values()})
             obs_tasks = {sid: asyncio.create_task(self._fetch_obs(sid)) for sid in station_ids}
             obs_results: dict[str, dict] = {}
             for sid, task in obs_tasks.items():
@@ -193,9 +241,11 @@ class RainradarCoordinator(DataUpdateCoordinator):
             self.radar_frames = self._generate_radar_frames()
 
             result: dict[str, dict] = {}
-            for loc_name, station in station_map.items():
+            for loc_key, (loc_name, source_entity, station) in station_map.items():
                 loc_data = obs_results.get(station.station_id, {})
-                result[loc_name] = {
+                result[loc_key] = {
+                    "location_name": loc_name,
+                    "source_entity": source_entity,
                     "station_id": station.station_id,
                     "station_name": station.name,
                     "station_distance_km": station.distance_km,

@@ -6,6 +6,8 @@ CONF_LATITUDE = "latitude"
 CONF_LONGITUDE = "longitude"
 CONF_SCAN_INTERVAL = "scan_interval"
 CONF_DEVICE_TRACKER = "device_tracker"
+CONF_ZONES = "zones"
+CONF_DEVICE_TRACKERS = "device_trackers"
 CONF_TRACKED_LOCATION_NAME = "tracked_location_name"
 
 DEFAULT_SCAN_INTERVAL = 600

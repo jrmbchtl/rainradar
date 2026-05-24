@@ -5,10 +5,8 @@
         "title": "Rainradar",
         "description": "Konfiguriere deinen Regenradar-Standort.",
         "data": {
-          "name": "Standortname",
-          "latitude": "Breitengrad",
-          "longitude": "Längengrad",
-          "device_tracker": "Gerätetracker-Entity-ID (optional)",
+          "zones": "Zonen",
+          "device_trackers": "Gerätetracker",
           "scan_interval": "Aktualisierungsintervall (Sekunden)"
         }
       }
@@ -22,7 +20,8 @@
       "init": {
         "title": "Rainradar Optionen",
         "data": {
-          "device_tracker": "Gerätetracker-Entity-ID",
+          "zones": "Zonen",
+          "device_trackers": "Gerätetracker",
           "scan_interval": "Aktualisierungsintervall (Sekunden)"
         }
       }

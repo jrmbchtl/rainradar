@@ -43,7 +43,27 @@ class RainradarCard extends LitElement {
     this._stationMarkers = [];
     this._timer = null;
     this._timeLabel = "";
+    this._lastRadarUpdate = null;
   }
+
+  static styles = css`
+    :host {
+      display: block;
+      position: relative;
+      width: 100%;
+      height: 420px;
+      overflow: hidden;
+    }
+
+    #map {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      min-height: 300px;
+      border-radius: var(--ha-card-border-radius, 12px);
+      overflow: hidden;
+    }
+  `;
 
   static getConfigElement() {
     return document.createElement("rainradar-card-editor");
@@ -74,6 +94,16 @@ class RainradarCard extends LitElement {
     return this._frames[i];
   }
 
+  _getStateAttributes(entityIds) {
+    for (const entityId of entityIds) {
+      const state = this.hass?.states?.[entityId];
+      if (state?.attributes) {
+        return state.attributes;
+      }
+    }
+    return null;
+  }
+
   _isForecast(frame) {
     const now = new Date();
     const ft = new Date(frame);
@@ -91,8 +121,13 @@ class RainradarCard extends LitElement {
     this._loading = true;
     this._totalFrames = 0;
 
-    const radarData = this.hass?.states?.["sensor.rainradar_radar_frames"]?.attributes
-      || this.hass?.states?.["rainradar.radar_frames"]?.attributes;
+    const radarData = this._getStateAttributes([
+      "sensor.rainradar_radar_frames",
+      "sensor.rainradar_frames",
+      "sensor.radar_frames",
+      "rainradar.radar_frames",
+    ]);
+    this._lastRadarUpdate = radarData?.last_update || null;
     if (!radarData) {
       this._loading = false;
       this._timeLabel = "No data";
@@ -268,23 +303,31 @@ class RainradarCard extends LitElement {
     this._stationMarkers.forEach((m) => this._map?.removeLayer(m));
     this._stationMarkers = [];
 
-    const stations = this.hass?.states?.["sensor.rainradar_stations"]?.attributes?.stations
-      || this.hass?.states?.["rainradar.stations"]?.attributes?.stations;
+    const stations = this._getStateAttributes([
+      "sensor.rainradar_stations",
+      "sensor.rainradar_stations_2",
+      "sensor.stations",
+      "rainradar.stations",
+    ])?.stations;
     if (!stations || !this._map) return;
 
     const bounds = this._map.getBounds();
     stations.forEach((s) => {
-      if (!s.lat || !s.lon) return;
-      if (!bounds.contains([s.lat, s.lon])) return;
+      const lat = Array.isArray(s) ? s[0] : s.lat;
+      const lon = Array.isArray(s) ? s[1] : s.lon;
+      const iconName = Array.isArray(s) ? s[2] : s.icon;
+      const temp = Array.isArray(s) ? s[3] : s.temp;
+      if (!lat || !lon) return;
+      if (!bounds.contains([lat, lon])) return;
 
       const icon = L.divIcon({
-        html: `<div style="text-align:center;font-size:10px;color:#333;text-shadow:0 0 4px rgba(255,255,255,0.9)"><div style="font-size:18px">${s.icon || "⬤"}</div><div>${s.temp || ""}</div></div>`,
+        html: `<div style="text-align:center;font-size:10px;color:#333;text-shadow:0 0 4px rgba(255,255,255,0.9)"><div style="font-size:18px">${iconName || "⬤"}</div><div>${temp || ""}</div></div>`,
         className: "",
         iconSize: [28, 28],
         iconAnchor: [14, 14],
       });
 
-      const marker = L.marker([s.lat, s.lon], { icon }).addTo(this._map);
+      const marker = L.marker([lat, lon], { icon }).addTo(this._map);
       this._stationMarkers.push(marker);
     });
   }
@@ -330,7 +373,18 @@ class RainradarCard extends LitElement {
 
   updated(changed) {
     if (changed.has("hass") && this._map) {
-      this._updateStationMarkers();
+      const radarData = this._getStateAttributes([
+        "sensor.rainradar_radar_frames",
+        "sensor.rainradar_frames",
+        "sensor.radar_frames",
+        "rainradar.radar_frames",
+      ]);
+      const radarUpdate = radarData?.last_update || null;
+      if (!this._frames.length || (radarUpdate && radarUpdate !== this._lastRadarUpdate)) {
+        this._buildFrames();
+      } else {
+        this._updateStationMarkers();
+      }
     }
   }
 
@@ -350,7 +404,7 @@ class RainradarCard extends LitElement {
     const maxIdx = Math.max(0, this._frames.length - 1);
 
     return html`
-      <div id="map" style="width:100%;height:100%;min-height:300px;border-radius:var(--ha-card-border-radius,12px);"></div>
+      <div id="map"></div>
 
       ${this._loading ? html`
         <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:var(--ha-card-background,#fff);padding:16px 24px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);text-align:center;">

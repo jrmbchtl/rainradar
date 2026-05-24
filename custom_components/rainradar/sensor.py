@@ -204,15 +204,7 @@ class RainradarStationsSensor(CoordinatorEntity, SensorEntity):
             return None
         stations = []
         for station in self.coordinator.stations:
-            stations.append(
-                {
-                    "station_id": station.station_id,
-                    "name": station.name,
-                    "lat": station.lat,
-                    "lon": station.lon,
-                    "distance_km": station.distance_km,
-                }
-            )
+            stations.append([station.lat, station.lon, None, None])
         return {"stations": stations}
 
 

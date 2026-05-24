@@ -30,7 +30,7 @@ All DWD data is Germany-focused — outside Germany no precipitation tiles are a
 
 1. Ensure [HACS](https://hacs.xyz/) is installed in your Home Assistant
 2. Add this repository as a custom repository in HACS:
-   - URL: `https://github.com/jorim/rainradar`
+   - URL: `https://github.com/jrmbchtl/rainradar`
    - Category: Integration
 3. Search for "Rainradar" in HACS and install
 4. Restart Home Assistant

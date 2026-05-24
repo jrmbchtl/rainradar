@@ -8,7 +8,6 @@ import zipfile
 from datetime import timedelta, datetime, timezone
 
 import aiohttp
-import async_timeout
 
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
@@ -17,6 +16,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     DOMAIN,
     CONF_LOCATIONS,
+    CONF_NAME,
     CONF_LATITUDE,
     CONF_LONGITUDE,
     CONF_SCAN_INTERVAL,
@@ -78,7 +78,7 @@ class RainradarCoordinator(DataUpdateCoordinator):
         path, _, _ = CDC_PRODUCTS[product]
         url = f"{CDC_BASE}/{path}/stundenwerte_{product}_{station_id}_akt.zip"
         try:
-            async with async_timeout.timeout(15):
+            async with asyncio.timeout(15):
                 async with self.session.get(url) as resp:
                     if resp.status != 200:
                         _LOGGER.debug("No %s data for station %s", product, station_id)

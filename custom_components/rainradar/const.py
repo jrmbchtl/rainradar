@@ -28,17 +28,12 @@ ATTR_WIND_DIRECTION = "wind_direction"
 ATTR_PRESSURE = "pressure"
 ATTR_PRECIPITATION = "precipitation"
 ATTR_CONDITION = "condition"
-ATTR_ALERTS = "alerts"
-ATTR_SUNSHINE = "sunshine"
 
 SENSOR_TYPES = {
     "temperature": {"unit": "°C", "icon": "mdi:thermometer"},
     "humidity": {"unit": "%", "icon": "mdi:water-percent"},
     "wind_speed": {"unit": "km/h", "icon": "mdi:weather-windy"},
     "wind_direction": {"unit": "°", "icon": "mdi:compass"},
-    "pressure": {"unit": "hPa", "icon": "mdi:gauge"},
     "precipitation": {"unit": "mm/h", "icon": "mdi:weather-rainy"},
     "condition": {"unit": None, "icon": "mdi:weather-cloudy"},
-    "alerts": {"unit": None, "icon": "mdi:alert"},
-    "sunshine": {"unit": "min", "icon": "mdi:weather-sunny"},
 }

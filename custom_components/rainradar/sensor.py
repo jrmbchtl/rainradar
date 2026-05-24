@@ -4,6 +4,7 @@ from homeassistant.components.sensor import SensorEntity, SensorEntityDescriptio
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
@@ -19,11 +20,8 @@ from .const import (
     ATTR_HUMIDITY,
     ATTR_WIND_SPEED,
     ATTR_WIND_DIRECTION,
-    ATTR_PRESSURE,
     ATTR_PRECIPITATION,
     ATTR_CONDITION,
-    ATTR_ALERTS,
-    ATTR_SUNSHINE,
 )
 from .coordinator import RainradarCoordinator
 
@@ -32,11 +30,8 @@ FIELD_MAP = {
     "humidity": ATTR_HUMIDITY,
     "wind_speed": ATTR_WIND_SPEED,
     "wind_direction": ATTR_WIND_DIRECTION,
-    "pressure": ATTR_PRESSURE,
     "precipitation": ATTR_PRECIPITATION,
     "condition": ATTR_CONDITION,
-    "alerts": ATTR_ALERTS,
-    "sunshine": ATTR_SUNSHINE,
 }
 
 
@@ -47,8 +42,33 @@ async def async_setup_entry(
 ) -> None:
     coordinator: RainradarCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[SensorEntity] = []
+    safe_names: list[str] = []
+
+    entities.append(
+        RainradarFramesSensor(
+            coordinator,
+            entry,
+            SensorEntityDescription(
+                key="radar_frames",
+                name="Radar Frames",
+                icon="mdi:radar",
+            ),
+        )
+    )
+    entities.append(
+        RainradarStationsSensor(
+            coordinator,
+            entry,
+            SensorEntityDescription(
+                key="stations",
+                name="Stations",
+                icon="mdi:weather-cloudy",
+            ),
+        )
+    )
 
     def add_location_entities(loc_key: str, loc_name: str, safe_name: str) -> None:
+        safe_names.append(safe_name)
         for sensor_key, desc in SENSOR_TYPES.items():
             entities.append(
                 RainradarSensor(
@@ -97,7 +117,103 @@ async def async_setup_entry(
         safe_tracked = tracker_entity.replace(".", "_").replace("-", "_")
         add_location_entities(f"tracker::{tracker_entity}", tracked_name, safe_tracked)
 
+    _cleanup_deprecated_entities(hass, safe_names)
+
     async_add_entities(entities)
+
+
+def _cleanup_deprecated_entities(hass: HomeAssistant, safe_names: list[str]) -> None:
+    registry = er.async_get(hass)
+    for safe_name in safe_names:
+        for sensor_key in ("pressure", "alerts", "sunshine"):
+            unique_id = f"{DOMAIN}_{safe_name}_{sensor_key}"
+            entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
+            if entity_id is not None:
+                registry.async_remove(entity_id)
+
+
+class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
+    def __init__(
+        self,
+        coordinator: RainradarCoordinator,
+        entry: ConfigEntry,
+        description: SensorEntityDescription,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{DOMAIN}_radar_frames"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"{entry.entry_id}_summary")},
+            "name": "Rainradar",
+            "manufacturer": "DWD",
+            "model": "Weather Data",
+            "sw_version": "0.1.0",
+        }
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data
+        if not data:
+            return None
+        radar_frames = data.get("radar_frames") or {}
+        return len(radar_frames.get("past", [])) + len(radar_frames.get("nowcast", [])) + len(radar_frames.get("forecast", []))
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        radar_frames = data.get("radar_frames") or {}
+        return {
+            "past": radar_frames.get("past", []),
+            "nowcast": radar_frames.get("nowcast", []),
+            "forecast": radar_frames.get("forecast", []),
+            "last_update": data.get("last_update"),
+        }
+
+
+class RainradarStationsSensor(CoordinatorEntity, SensorEntity):
+    def __init__(
+        self,
+        coordinator: RainradarCoordinator,
+        entry: ConfigEntry,
+        description: SensorEntityDescription,
+    ) -> None:
+        super().__init__(coordinator)
+        self.entity_description = description
+        self._attr_unique_id = f"{DOMAIN}_stations"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"{entry.entry_id}_summary")},
+            "name": "Rainradar",
+            "manufacturer": "DWD",
+            "model": "Weather Data",
+            "sw_version": "0.1.0",
+        }
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data
+        if not data:
+            return None
+        return data.get("stations_count")
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        stations = []
+        for station in self.coordinator.stations:
+            stations.append(
+                {
+                    "station_id": station.station_id,
+                    "name": station.name,
+                    "lat": station.lat,
+                    "lon": station.lon,
+                    "distance_km": station.distance_km,
+                }
+            )
+        return {"stations": stations}
 
 
 class RainradarSensor(CoordinatorEntity, SensorEntity):

@@ -108,23 +108,23 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 class RainradarOptionsFlow(config_entries.OptionsFlow):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+        self._config_entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
-        current_locations = self.config_entry.options.get(CONF_LOCATIONS, [])
-        zones = _normalize_entity_list(self.config_entry.options.get(CONF_ZONES))
+        current_locations = self._config_entry.options.get(CONF_LOCATIONS, [])
+        zones = _normalize_entity_list(self._config_entry.options.get(CONF_ZONES))
         if not zones and self.hass.states.get("zone.home") is not None:
             zones = ["zone.home"]
 
         device_trackers = _normalize_entity_list(
-            self.config_entry.options.get(CONF_DEVICE_TRACKERS)
+            self._config_entry.options.get(CONF_DEVICE_TRACKERS)
         )
         if not device_trackers:
             device_trackers = _normalize_entity_list(
-                self.config_entry.options.get(CONF_DEVICE_TRACKER)
+                self._config_entry.options.get(CONF_DEVICE_TRACKER)
             )
 
-        scan_interval = self.config_entry.options.get(
+        scan_interval = self._config_entry.options.get(
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
 

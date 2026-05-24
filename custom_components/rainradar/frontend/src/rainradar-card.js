@@ -91,7 +91,8 @@ class RainradarCard extends LitElement {
     this._loading = true;
     this._totalFrames = 0;
 
-    const radarData = this.hass?.states?.["rainradar.radar_frames"]?.attributes;
+    const radarData = this.hass?.states?.["sensor.rainradar_radar_frames"]?.attributes
+      || this.hass?.states?.["rainradar.radar_frames"]?.attributes;
     if (!radarData) {
       this._loading = false;
       this._timeLabel = "No data";
@@ -267,7 +268,8 @@ class RainradarCard extends LitElement {
     this._stationMarkers.forEach((m) => this._map?.removeLayer(m));
     this._stationMarkers = [];
 
-    const stations = this.hass?.states?.["rainradar.stations"]?.attributes?.stations;
+    const stations = this.hass?.states?.["sensor.rainradar_stations"]?.attributes?.stations
+      || this.hass?.states?.["rainradar.stations"]?.attributes?.stations;
     if (!stations || !this._map) return;
 
     const bounds = this._map.getBounds();
@@ -319,6 +321,7 @@ class RainradarCard extends LitElement {
     this._osmLayer = L.tileLayer(OSM_URL, {
       attribution: OSM_ATTR,
       maxZoom: 18,
+      referrerPolicy: "origin",
     }).addTo(this._map);
 
     this._map.on("moveend", () => this._updateStationMarkers());

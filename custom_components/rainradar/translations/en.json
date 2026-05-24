@@ -3,10 +3,24 @@
     "step": {
       "user": {
         "title": "Rainradar",
-        "description": "Configure your rain radar locations.",
+        "description": "Add your home location and configure the rain radar integration.",
         "data": {
-          "locations": "Locations (name, latitude, longitude)",
+          "name": "Location name",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "device_tracker": "Device tracker (optional)",
+          "tracked_location_name": "Tracked location name",
           "scan_interval": "Update interval (seconds)"
+        }
+      },
+      "add_location": {
+        "title": "Add another location",
+        "description": "Add an additional location to track weather for.",
+        "data": {
+          "name": "Location name",
+          "latitude": "Latitude",
+          "longitude": "Longitude",
+          "add_another": "Add another after this"
         }
       }
     },
@@ -19,8 +33,20 @@
       "init": {
         "title": "Rainradar Options",
         "data": {
-          "locations": "Locations",
-          "scan_interval": "Update interval (seconds)"
+          "locations_display": "Current locations",
+          "device_tracker": "Device tracker",
+          "tracked_location_name": "Tracked location name",
+          "scan_interval": "Update interval (seconds)",
+          "action": "Action"
+        }
+      },
+      "add_location": {
+        "title": "Add location",
+        "description": "Add a new location to track weather for.",
+        "data": {
+          "name": "Location name",
+          "latitude": "Latitude",
+          "longitude": "Longitude"
         }
       }
     }

@@ -1,4 +1,6 @@
 import math
+from datetime import datetime, timezone
+
 import aiohttp
 import logging
 
@@ -41,12 +43,32 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
+def _is_active(bis_datum: str) -> bool:
+    try:
+        end = int(bis_datum)
+        if end >= 99990000:
+            return True
+        end_dt = datetime(
+            year=end // 10000,
+            month=(end // 100) % 100,
+            day=end % 100,
+            tzinfo=timezone.utc,
+        )
+        cutoff = datetime.now(timezone.utc)
+        return (cutoff - end_dt).days < 60
+    except (ValueError, OverflowError):
+        return False
+
+
 def _parse_station_line(line: str) -> DWDStation | None:
     parts = line.split(maxsplit=6)
     if len(parts) < 7:
         return None
     try:
         station_id = parts[0]
+        bis_datum = parts[2]
+        if not _is_active(bis_datum):
+            return None
         lat = float(parts[4].replace(",", "."))
         lon = float(parts[5].replace(",", "."))
         rest = parts[6].rsplit(maxsplit=2)
@@ -66,7 +88,8 @@ async def fetch_stations(session: aiohttp.ClientSession) -> list[DWDStation]:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status != 200:
                     continue
-                text = await resp.text()
+                raw = await resp.read()
+                text = raw.decode("latin-1", errors="replace")
                 lines = text.split("\n")
                 for line in lines[2:]:
                     station = _parse_station_line(line)
@@ -77,6 +100,7 @@ async def fetch_stations(session: aiohttp.ClientSession) -> list[DWDStation]:
         except Exception as exc:
             _LOGGER.warning("Failed to fetch stations from %s: %s", url, exc)
             continue
+    _LOGGER.info("Loaded %d active DWD stations", len(stations))
     return stations
 
 

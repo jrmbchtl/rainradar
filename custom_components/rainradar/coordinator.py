@@ -68,12 +68,10 @@ class RainradarCoordinator(DataUpdateCoordinator):
 
         self.stations: list[DWDStation] = []
         self.radar_frames: dict[str, list[str]] = {}
-        self._session: aiohttp.ClientSession | None = None
+        self._session = aiohttp.ClientSession()
 
     @property
     def session(self) -> aiohttp.ClientSession:
-        if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
         return self._session
 
     async def _get_zip_text(self, product: str, station_id: str) -> str | None:
@@ -89,8 +87,13 @@ class RainradarCoordinator(DataUpdateCoordinator):
             with zipfile.ZipFile(io.BytesIO(raw)) as zf:
                 for name in zf.namelist():
                     if name.startswith("produkt_"):
-                        txt = zf.read(name).decode("utf-8", errors="replace")
-                        return txt
+                        raw_text = zf.read(name)
+                        for enc in ("utf-8", "latin-1"):
+                            try:
+                                return raw_text.decode(enc)
+                            except (UnicodeDecodeError, UnicodeEncodeError):
+                                continue
+                        return raw_text.decode("utf-8", errors="replace")
             return None
         except Exception as exc:
             _LOGGER.debug("Failed to fetch %s for %s: %s", product, station_id, exc)
@@ -210,5 +213,5 @@ class RainradarCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Failed to update DWD data: {exc}") from exc
 
     async def async_close(self):
-        if self._session and not self._session.closed:
+        if not self._session.closed:
             await self._session.close()

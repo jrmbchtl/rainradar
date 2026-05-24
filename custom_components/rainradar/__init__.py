@@ -35,7 +35,20 @@ async def _register_card(hass: HomeAssistant) -> None:
         _LOGGER.warning("Rainradar card JS not found at %s", card_path)
         return
     url = f"/{DOMAIN}/rainradar-card.js"
-    hass.http.register_static_path(url, card_path, cache_headers=False)
+
+    # HA 2025+: async static path registration API
+    try:
+        if hasattr(hass.http, "async_register_static_paths"):
+            from homeassistant.components.http import StaticPathConfig
+
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(url, card_path, cache_headers=False)]
+            )
+        else:
+            hass.http.register_static_path(url, card_path, cache_headers=False)
+    except Exception as exc:
+        _LOGGER.warning("Failed to register static path %s: %s", url, exc)
+        return
 
     # HA 2025+: Lovelace resource system
     try:
@@ -68,7 +81,7 @@ async def _register_card(hass: HomeAssistant) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    coordinator: RainradarCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = hass.data[DOMAIN][entry.entry_id]
     await coordinator.async_close()
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:

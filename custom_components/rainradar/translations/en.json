@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Rainradar",
+        "description": "Configure your rain radar locations.",
+        "data": {
+          "locations": "Locations (name, latitude, longitude)",
+          "scan_interval": "Update interval (seconds)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Only one Rainradar configuration is allowed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Rainradar Options",
+        "data": {
+          "locations": "Locations",
+          "scan_interval": "Update interval (seconds)"
+        }
+      }
+    }
+  }
+}

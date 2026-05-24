@@ -1,0 +1,24 @@
+{
+  "name": "rainradar-card",
+  "version": "0.1.0",
+  "description": "Rainradar HomeAssistant integration frontend card",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c rollup.config.mjs",
+    "watch": "rollup -c rollup.config.mjs --watch",
+    "lint": "eslint src/",
+    "prebuild": "npm install"
+  },
+  "dependencies": {
+    "leaflet": "^1.9.4",
+    "lit": "^3.1.0"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^25.0.0",
+    "@rollup/plugin-node-resolve": "^15.0.0",
+    "@rollup/plugin-terser": "^0.4.0",
+    "rollup": "^4.0.0",
+    "rollup-plugin-copy": "^3.5.0"
+  }
+}

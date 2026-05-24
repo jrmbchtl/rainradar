@@ -1,0 +1,28 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Rainradar",
+        "description": "Konfiguriere deine Regenradar-Standorte.",
+        "data": {
+          "locations": "Standorte (Name, Breitengrad, Längengrad)",
+          "scan_interval": "Aktualisierungsintervall (Sekunden)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Nur eine Rainradar-Konfiguration ist erlaubt."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Rainradar Optionen",
+        "data": {
+          "locations": "Standorte",
+          "scan_interval": "Aktualisierungsintervall (Sekunden)"
+        }
+      }
+    }
+  }
+}

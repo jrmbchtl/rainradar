@@ -1,0 +1,14 @@
+{
+  "domain": "rainradar",
+  "name": "Rainradar",
+  "codeowners": ["@rainradar"],
+  "config_flow": true,
+  "documentation": "https://github.com/jorim/rainradar",
+  "issue_tracker": "https://github.com/jorim/rainradar/issues",
+  "integration_type": "hub",
+  "homeassistant": "2026.5.0",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "version": "0.2.0",
+  "loggers": ["custom_components.rainradar"]
+}

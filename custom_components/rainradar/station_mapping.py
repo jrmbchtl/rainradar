@@ -1,0 +1,90 @@
+import math
+import aiohttp
+import logging
+
+from .const import DWD_OPENDATA
+
+_LOGGER = logging.getLogger(__name__)
+
+STATION_LIST_URL = (
+    "https://opendata.dwd.de/climate_environment/CDC/observations_germany/"
+    "climate/hourly/air_temperature/recent/"
+    "TU_Stundenwerte_Beschreibung_Stationen.txt"
+)
+
+STATION_FALLBACK_URL = (
+    "https://opendata.dwd.de/climate_environment/CDC/observations_germany/"
+    "climate/daily/kl/recent/"
+    "KL_Tageswerte_Beschreibung_Stationen.txt"
+)
+
+
+class DWDStation:
+    def __init__(self, station_id: str, name: str, lat: float, lon: float):
+        self.station_id = station_id
+        self.name = name
+        self.lat = lat
+        self.lon = lon
+        self.distance_km = 0.0
+
+
+def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    R = 6371
+    d_lat = math.radians(lat2 - lat1)
+    d_lon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(d_lat / 2) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(d_lon / 2) ** 2
+    )
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _parse_station_line(line: str) -> DWDStation | None:
+    parts = line.split(maxsplit=6)
+    if len(parts) < 7:
+        return None
+    try:
+        station_id = parts[0]
+        lat = float(parts[4].replace(",", "."))
+        lon = float(parts[5].replace(",", "."))
+        rest = parts[6].rsplit(maxsplit=2)
+        name = rest[0].strip('" ') if rest else ""
+        if station_id and name:
+            return DWDStation(station_id, name, lat, lon)
+    except (ValueError, IndexError):
+        pass
+    return None
+
+
+async def fetch_stations(session: aiohttp.ClientSession) -> list[DWDStation]:
+    stations = []
+    urls = [STATION_LIST_URL, STATION_FALLBACK_URL]
+    for url in urls:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                if resp.status != 200:
+                    continue
+                text = await resp.text()
+                lines = text.split("\n")
+                for line in lines[2:]:
+                    station = _parse_station_line(line)
+                    if station is not None:
+                        stations.append(station)
+                if stations:
+                    break
+        except Exception as exc:
+            _LOGGER.warning("Failed to fetch stations from %s: %s", url, exc)
+            continue
+    return stations
+
+
+def find_nearest_station(
+    lat: float, lon: float, stations: list[DWDStation]
+) -> DWDStation | None:
+    if not stations:
+        return None
+    nearest = min(stations, key=lambda s: _haversine(lat, lon, s.lat, s.lon))
+    nearest.distance_km = round(_haversine(lat, lon, nearest.lat, nearest.lon), 1)
+    return nearest

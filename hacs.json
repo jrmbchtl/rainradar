@@ -1,0 +1,9 @@
+{
+  "name": "Rainradar",
+  "content_in_root": true,
+  "render_readme": true,
+  "iot_class": "Cloud Polling",
+  "domains": ["rainradar"],
+  "country": ["DE"],
+  "homeassistant": "2024.6.0"
+}

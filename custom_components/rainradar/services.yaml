@@ -1,0 +1,11 @@
+update:
+  name: Update
+  description: Force an immediate update of all rainradar sensors.
+  target:
+    entity:
+      integration: rainradar
+      domain: sensor
+
+reload:
+  name: Reload
+  description: Reload the rainradar configuration.

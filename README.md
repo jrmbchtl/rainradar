@@ -1,0 +1,2 @@
+# rainradar
+Rainradar HomeAssistant integration

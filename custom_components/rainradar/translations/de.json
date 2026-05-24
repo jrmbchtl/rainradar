@@ -3,24 +3,13 @@
     "step": {
       "user": {
         "title": "Rainradar",
-        "description": "Füge deinen Standort hinzu und konfiguriere die Regenradar-Integration.",
+        "description": "Konfiguriere deinen Regenradar-Standort.",
         "data": {
           "name": "Standortname",
           "latitude": "Breitengrad",
           "longitude": "Längengrad",
           "device_tracker": "Gerätetracker (optional)",
-          "tracked_location_name": "Name des verfolgten Standorts",
           "scan_interval": "Aktualisierungsintervall (Sekunden)"
-        }
-      },
-      "add_location": {
-        "title": "Weiteren Standort hinzufügen",
-        "description": "Füge einen weiteren Standort für die Wetterverfolgung hinzu.",
-        "data": {
-          "name": "Standortname",
-          "latitude": "Breitengrad",
-          "longitude": "Längengrad",
-          "add_another": "Danach weiteren hinzufügen"
         }
       }
     },
@@ -33,20 +22,9 @@
       "init": {
         "title": "Rainradar Optionen",
         "data": {
-          "locations_display": "Aktuelle Standorte",
+          "locations": "Standorte (Name, Breite, Länge)",
           "device_tracker": "Gerätetracker",
-          "tracked_location_name": "Name des verfolgten Standorts",
-          "scan_interval": "Aktualisierungsintervall (Sekunden)",
-          "action": "Aktion"
-        }
-      },
-      "add_location": {
-        "title": "Standort hinzufügen",
-        "description": "Füge einen neuen Standort zur Wetterverfolgung hinzu.",
-        "data": {
-          "name": "Standortname",
-          "latitude": "Breitengrad",
-          "longitude": "Längengrad"
+          "scan_interval": "Aktualisierungsintervall (Sekunden)"
         }
       }
     }

@@ -1,6 +1,6 @@
 # Rainradar
 
-Rainradar is a [Home Assistant](https://www.home-assistant.io/) integration that brings the **Deutscher Wetterdienst (DWD)** rain radar directly into your dashboard. It combines a full-featured Python backend with an embedded LitElement + Leaflet frontend card.
+Rainradar is a [Home Assistant](https://www.home-assistant.io/) integration that brings the **Deutscher Wetterdienst (DWD)** rain radar and weather data directly into your dashboard. It combines a Python backend with an embedded LitElement + Leaflet frontend card.
 
 No API keys required — all data comes from free DWD sources.
 
@@ -8,19 +8,20 @@ No API keys required — all data comes from free DWD sources.
 
 - **Instant-playback radar map** — parallel tile loading for 48–64 frames, animation starts only when all tiles are ready
 - **Dual mode** — 5-min interval (2h RADVOR nowcast) and 15-min interval (14h ICON-D2-RUC forecast)
-- **Weather sensors** — temperature, humidity, wind speed/direction, pressure, precipitation, condition, alerts, sunshine per configured location
+- **Weather sensors** — temperature, humidity, wind speed/direction, precipitation per configured location
+- **Device tracker support** — optionally follow a tracked device for dynamic weather location
 - **DWD weather stations** — ~200 station dots with live weather icons across Germany
-- **Smart location matching** — nearest DWD station is automatically matched to each configured location via haversine distance
+- **Smart location matching** — nearest DWD station automatically matched via haversine distance
 - **Unlimited locations** — add as many locations as you want in the config flow, with `zone.home` as default
 - **MDI weather icons** — `mdi:weather-*` icons along with sensor values
 
 ## Data sources
 
-| Source | Endpoint | Data |
-|--------|----------|------|
-| DWD Geoserver WMS | `maps.dwd.de/geoserver/dwd/wms` | RADOLAN (past), RADVOR (nowcast), ICON-D2 (forecast) precipitation tiles |
-| DWD WarnWetter API | `app-prod-ws.warnwetter.de/v30/` | Station weather observations + weather alerts |
-| DWD OpenData | `opendata.dwd.de` | Station catalog with coordinates |
+| Source | Data |
+|--------|------|
+| DWD Geoserver WMS (`maps.dwd.de`) | RADOLAN (past), RADVOR (nowcast), ICON-D2 (forecast) precipitation tiles |
+| DWD CDC OpenData (`opendata.dwd.de`) | Hourly station observations: temperature, humidity, wind, precipitation |
+| DWD station catalog | Station coordinates for nearest-station matching |
 
 All DWD data is Germany-focused — outside Germany no precipitation tiles are available.
 
@@ -30,7 +31,7 @@ All DWD data is Germany-focused — outside Germany no precipitation tiles are a
 
 1. Ensure [HACS](https://hacs.xyz/) is installed in your Home Assistant
 2. Add this repository as a custom repository in HACS:
-   - URL: `https://github.com/jrmbchtl/rainradar`
+   - URL: `https://github.com/jorim/rainradar`
    - Category: Integration
 3. Search for "Rainradar" in HACS and install
 4. Restart Home Assistant
@@ -45,7 +46,8 @@ All DWD data is Germany-focused — outside Germany no precipitation tiles are a
 1. Go to **Settings → Devices & Services → Add Integration**
 2. Search for "Rainradar"
 3. Add one or more locations (name, latitude, longitude) — `zone.home` is pre-filled as default
-4. Optionally adjust the scan interval (default: 600 seconds)
+4. Optionally select a **device tracker** for automatic location tracking
+5. Adjust the scan interval (default: 600 seconds)
 
 ## Dashboard card
 

@@ -12,6 +12,7 @@ const DEFAULT_CENTER = [51.1657, 10.4515];
 const DEFAULT_ZOOM = 7;
 const FRAME_MS = 150;
 const LOAD_TIMEOUT_MS = 15000;
+const DATA_RETRY_MS = 3000;
 
 class RainradarCard extends LitElement {
   static properties = {
@@ -25,6 +26,7 @@ class RainradarCard extends LitElement {
     _totalFrames: { state: true },
     _speed: { state: true },
     _timeLabel: { state: true },
+    _showingNoData: { state: true },
   };
 
   constructor() {
@@ -42,8 +44,11 @@ class RainradarCard extends LitElement {
     this._markers = [];
     this._stationMarkers = [];
     this._timer = null;
+    this._retryTimer = null;
     this._timeLabel = "";
     this._lastRadarUpdate = null;
+    this._centerMarker = null;
+    this._showingNoData = false;
   }
 
   static styles = css`
@@ -51,8 +56,9 @@ class RainradarCard extends LitElement {
       display: block;
       position: relative;
       width: 100%;
-      height: 420px;
+      height: var(--rainradar-card-height, 420px);
       overflow: hidden;
+      box-sizing: border-box;
     }
 
     #map {
@@ -63,6 +69,13 @@ class RainradarCard extends LitElement {
       border-radius: var(--ha-card-border-radius, 12px);
       overflow: hidden;
     }
+
+    .controls {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 1000;
+    }
   `;
 
   static getConfigElement() {
@@ -72,8 +85,8 @@ class RainradarCard extends LitElement {
   static getStubConfig() {
     return {
       mode: "5min",
-      locations: [],
-      default_location: "",
+      center_entity: "zone.home",
+      height: 420,
     };
   }
 
@@ -92,6 +105,24 @@ class RainradarCard extends LitElement {
 
   _getFrameKey(i) {
     return this._frames[i];
+  }
+
+  _getEntityLatLon(entityId) {
+    const state = this.hass?.states?.[entityId];
+    const attrs = state?.attributes;
+    if (!attrs) return null;
+    const lat = attrs.latitude ?? attrs.lat;
+    const lon = attrs.longitude ?? attrs.lon ?? attrs.lng;
+    if (lat == null || lon == null) return null;
+    const name = attrs.friendly_name || state?.name || entityId;
+    return { lat: Number(lat), lon: Number(lon), name };
+  }
+
+  _getConfiguredCenter() {
+    const preferred = this.config.center_entity || "zone.home";
+    return this._getEntityLatLon(preferred)
+      || this._getEntityLatLon("zone.home")
+      || null;
   }
 
   _getStateAttributes(entityIds) {
@@ -113,6 +144,7 @@ class RainradarCard extends LitElement {
   _buildFrames() {
     this._playing = false;
     this._clearTimer();
+    this._clearRetryTimer();
     this._clearTileLayers();
     this._frames = [];
     this._loadedFrames = new Set();
@@ -129,11 +161,18 @@ class RainradarCard extends LitElement {
     ]);
     this._lastRadarUpdate = radarData?.last_update || null;
     if (!radarData) {
-      this._loading = false;
-      this._timeLabel = "No data";
+      this._loading = true;
+      this._showingNoData = true;
+      this._timeLabel = "Waiting for radar data...";
+      this._retryTimer = setTimeout(() => {
+        if (this._map) {
+          this._buildFrames();
+        }
+      }, DATA_RETRY_MS);
       this.requestUpdate();
       return;
     }
+    this._showingNoData = false;
 
     const past = radarData.past || [];
     const nowcast = radarData.nowcast || [];
@@ -195,6 +234,13 @@ class RainradarCard extends LitElement {
     });
 
     this.requestUpdate();
+  }
+
+  _clearRetryTimer() {
+    if (this._retryTimer) {
+      clearTimeout(this._retryTimer);
+      this._retryTimer = null;
+    }
   }
 
   _checkLoadComplete() {
@@ -292,11 +338,29 @@ class RainradarCard extends LitElement {
   }
 
   _recenter() {
-    const locs = this.config.locations || [];
-    const active = locs.find((l) => l.name === this.config.default_location);
-    const lat = active?.lat ?? DEFAULT_CENTER[0];
-    const lon = active?.lon ?? DEFAULT_CENTER[1];
+    const center = this._getConfiguredCenter();
+    const lat = center?.lat ?? DEFAULT_CENTER[0];
+    const lon = center?.lon ?? DEFAULT_CENTER[1];
     this._map?.setView([lat, lon], DEFAULT_ZOOM + 1);
+  }
+
+  _updateCenterMarker() {
+    if (!this._map) return;
+    if (this._centerMarker) {
+      this._map.removeLayer(this._centerMarker);
+      this._centerMarker = null;
+    }
+
+    const center = this._getConfiguredCenter();
+    if (!center) return;
+
+    const icon = L.divIcon({
+      html: `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;color:var(--primary-color,#03a9f4);text-shadow:0 0 4px rgba(255,255,255,0.95);font-weight:700;"><ha-icon icon="mdi:map-marker-radius" style="font-size:24px;"></ha-icon><div style="font-size:11px;background:rgba(255,255,255,0.88);padding:2px 6px;border-radius:999px;white-space:nowrap;">${center.name}</div></div>`,
+      className: "",
+      iconSize: [64, 64],
+      iconAnchor: [32, 56],
+    });
+    this._centerMarker = L.marker([center.lat, center.lon], { icon }).addTo(this._map);
   }
 
   _updateStationMarkers() {
@@ -350,13 +414,13 @@ class RainradarCard extends LitElement {
     const container = this.shadowRoot?.getElementById("map");
     if (!container) return;
 
-    const locs = this.config.locations || [];
-    const def = locs.find((l) => l.name === this.config.default_location);
-    const center = def ? [def.lat, def.lon] : DEFAULT_CENTER;
+    const center = this._getConfiguredCenter();
+    const initialCenter = center ? [center.lat, center.lon] : DEFAULT_CENTER;
+    const zoom = center ? DEFAULT_ZOOM + 2 : DEFAULT_ZOOM;
 
     this._map = L.map(container, {
-      center,
-      zoom: DEFAULT_ZOOM,
+      center: initialCenter,
+      zoom,
       zoomControl: false,
       attributionControl: true,
     });
@@ -368,7 +432,10 @@ class RainradarCard extends LitElement {
     }).addTo(this._map);
 
     this._map.on("moveend", () => this._updateStationMarkers());
-    this._map.whenReady(() => this._buildFrames());
+    this._map.whenReady(() => {
+      this._updateCenterMarker();
+      this._buildFrames();
+    });
   }
 
   updated(changed) {
@@ -383,14 +450,23 @@ class RainradarCard extends LitElement {
       if (!this._frames.length || (radarUpdate && radarUpdate !== this._lastRadarUpdate)) {
         this._buildFrames();
       } else {
+        this._updateCenterMarker();
         this._updateStationMarkers();
       }
+    }
+
+    if (changed.has("config") && this._map) {
+      const height = Number(this.config?.height || 420);
+      this.style.setProperty("--rainradar-card-height", `${height}px`);
+      this._updateCenterMarker();
+      this._recenter();
     }
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._clearTimer();
+    this._clearRetryTimer();
     if (this._map) {
       this._map.remove();
       this._map = null;
@@ -402,18 +478,24 @@ class RainradarCard extends LitElement {
       ? Math.round((this._loadedFrames.size / this._totalFrames) * 100)
       : 0;
     const maxIdx = Math.max(0, this._frames.length - 1);
+    const height = Number(this.config?.height || 420);
+
+    this.style.setProperty("--rainradar-card-height", `${height}px`);
 
     return html`
-      <div id="map"></div>
+      <div class="controls">
+        <div id="map"></div>
+      </div>
 
       ${this._loading ? html`
         <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:var(--ha-card-background,#fff);padding:16px 24px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);text-align:center;">
-          <div>Loading radar data...</div>
+          <div>${this._showingNoData ? "Waiting for radar data..." : "Loading radar data..."}</div>
           <div style="font-size:12px;margin-top:4px;">${pct}% (${this._loadedFrames.size}/${this._totalFrames})</div>
         </div>
       ` : nothing}
 
-      <div style="position:absolute;top:8px;left:8px;z-index:1000;display:flex;gap:4px;pointer-events:none;">
+      <div style="position:absolute;inset:0;z-index:1100;pointer-events:none;">
+        <div style="position:absolute;top:8px;left:8px;display:flex;gap:4px;pointer-events:none;">
         <div style="display:flex;gap:2px;background:var(--ha-card-background,#fff);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.15);overflow:hidden;pointer-events:auto;font-size:12px;">
           <button class="${this.config.mode === "5min" ? "active" : ""}"
             style="padding:6px 12px;border:none;cursor:pointer;background:${this.config.mode === "5min" ? "var(--primary-color,#03a9f4)" : "transparent"};color:${this.config.mode === "5min" ? "#fff" : "var(--primary-text-color,#333)"};font-weight:${this.config.mode === "5min" ? "600" : "400"}"
@@ -426,21 +508,21 @@ class RainradarCard extends LitElement {
             15-min
           </button>
         </div>
-      </div>
+        </div>
 
-      <div style="position:absolute;top:48px;right:8px;z-index:1000;display:flex;flex-direction:column;gap:2px;">
+        <div style="position:absolute;top:48px;right:8px;display:flex;flex-direction:column;gap:2px;pointer-events:auto;">
         <button style="background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px 12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);font-size:16px;font-weight:700;color:var(--primary-text-color,#333);line-height:1;"
           @click=${() => this._map?.zoomIn()} title="Zoom in">+</button>
         <button style="background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px 12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);font-size:16px;font-weight:700;color:var(--primary-text-color,#333);line-height:1;"
           @click=${() => this._map?.zoomOut()} title="Zoom out">−</button>
-      </div>
+        </div>
 
-      <button style="position:absolute;top:8px;right:8px;z-index:1000;background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);display:flex;align-items:center;justify-content:center;color:var(--primary-text-color,#333);font-size:18px;"
+        <button style="position:absolute;top:8px;right:8px;pointer-events:auto;background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);display:flex;align-items:center;justify-content:center;color:var(--primary-text-color,#333);font-size:18px;"
         @click=${this._recenter} title="Recenter to home">
         <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
       </button>
 
-      <div style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:var(--ha-card-background,#fff);padding:6px 14px;border-radius:24px;box-shadow:0 2px 8px rgba(0,0,0,0.2);z-index:1000;font-size:13px;">
+        <div style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:var(--ha-card-background,#fff);padding:6px 14px;border-radius:24px;box-shadow:0 2px 8px rgba(0,0,0,0.2);font-size:13px;pointer-events:auto;">
         <button style="background:none;border:none;cursor:pointer;padding:4px 6px;border-radius:4px;display:flex;align-items:center;color:var(--primary-text-color,#333);font-size:16px;"
           @click=${this._togglePlay} title=${this._playing ? "Pause" : "Play"}>
           <ha-icon icon=${this._playing ? "mdi:pause" : "mdi:play"}></ha-icon>
@@ -458,9 +540,10 @@ class RainradarCard extends LitElement {
           @click=${() => this._setSpeed(1)}>1×</button>
         <button style="background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:4px;color:var(--primary-text-color,#333);font-size:11px;font-weight:${this._speed === 2 ? "700" : "400"};color:${this._speed === 2 ? "var(--primary-color,#03a9f4)" : "inherit"}"
           @click=${() => this._setSpeed(2)}>2×</button>
+        </div>
       </div>
 
-      <div style="position:absolute;bottom:76px;right:8px;z-index:1000;background:rgba(255,255,255,0.9);padding:4px 8px;border-radius:6px;font-size:10px;box-shadow:0 1px 4px rgba(0,0,0,0.15);line-height:1.5;">
+      <div style="position:absolute;bottom:76px;right:8px;z-index:1100;background:rgba(255,255,255,0.9);padding:4px 8px;border-radius:6px;font-size:10px;box-shadow:0 1px 4px rgba(0,0,0,0.15);line-height:1.5;pointer-events:auto;">
         <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#00ff00;display:inline-block;"></span> light</div>
         <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#00aaff;display:inline-block;"></span> moderate</div>
         <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#ff0000;display:inline-block;"></span> heavy</div>
@@ -518,9 +601,19 @@ class RainradarCardEditor extends LitElement {
             ]}},
           },
           {
-            name: "default_location",
-            label: "Default location name",
-            selector: { text: {} },
+            name: "center_entity",
+            label: "Center map on entity",
+            selector: { entity: { domain: ["zone", "device_tracker"] } },
+          },
+          {
+            name: "height",
+            label: "Widget height",
+            selector: { select: { options: [
+              { value: 320, label: "320 px" },
+              { value: 420, label: "420 px" },
+              { value: 560, label: "560 px" },
+              { value: 720, label: "720 px" },
+            ]}},
           },
         ]}
         .computeLabel=${(s) => s.label}

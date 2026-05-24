@@ -132,6 +132,18 @@ class RainradarCard extends LitElement {
         return state.attributes;
       }
     }
+    // Fallback: try to discover a likely radar state by scanning all entities
+    try {
+      for (const id of Object.keys(this.hass?.states || {})) {
+        const lid = id.toLowerCase();
+        if ((lid.includes("rain") || lid.includes("radar")) && (lid.includes("frame") || lid.includes("frames") || lid.includes("radar_frames"))) {
+          const s = this.hass.states[id];
+          if (s?.attributes) return s.attributes;
+        }
+      }
+    } catch (e) {
+      // ignore
+    }
     return null;
   }
 
@@ -261,6 +273,10 @@ class RainradarCard extends LitElement {
     });
     if (this._frames.length > 0) {
       this._showFrame(0);
+    }
+    // Ensure Leaflet recalculates sizes so tiles align correctly
+    if (this._map && typeof this._map.invalidateSize === "function") {
+      setTimeout(() => this._map.invalidateSize(true), 120);
     }
   }
 
@@ -435,6 +451,14 @@ class RainradarCard extends LitElement {
     this._map.whenReady(() => {
       this._updateCenterMarker();
       this._buildFrames();
+      // Give the layout a moment then invalidate size to avoid tile misplacement
+      setTimeout(() => {
+        try {
+          this._map.invalidateSize(true);
+        } catch (e) {
+          // ignore
+        }
+      }, 200);
     });
   }
 
@@ -453,6 +477,10 @@ class RainradarCard extends LitElement {
         this._updateCenterMarker();
         this._updateStationMarkers();
       }
+      // Ensure map keeps tiles aligned after state-driven updates
+      try {
+        this._map.invalidateSize(true);
+      } catch (e) {}
     }
 
     if (changed.has("config") && this._map) {

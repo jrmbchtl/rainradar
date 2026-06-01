@@ -217,7 +217,6 @@ class RainradarCard extends LitElement {
         format: "image/png",
         transparent: true,
         version: "1.3.0",
-        crs: "EPSG:4326",
         opacity: 0,
         maxZoom: 14,
         minZoom: 4,

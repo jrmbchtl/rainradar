@@ -211,6 +211,7 @@ class RainradarCard extends LitElement {
       const styleName = isFc ? "icon-eu_reg00625_fd_sl_totprec01h_lawa" : "niederschlagsradar";
 
       const layer = L.tileLayer.wms(DWD_WMS, {
+        crs: L.CRS.EPSG3857,
         layers: layerName,
         styles: styleName,
         time: time,
@@ -434,6 +435,7 @@ class RainradarCard extends LitElement {
     const zoom = center ? DEFAULT_ZOOM + 2 : DEFAULT_ZOOM;
 
     this._map = L.map(container, {
+      crs: L.CRS.EPSG3857,
       center: initialCenter,
       zoom,
       zoomControl: false,

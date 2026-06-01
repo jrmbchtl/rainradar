@@ -68,13 +68,14 @@ class RainradarCard extends LitElement {
       min-height: 300px;
       border-radius: var(--ha-card-border-radius, 12px);
       overflow: hidden;
+      z-index: 0;
     }
 
     .controls {
       position: absolute;
       inset: 0;
       pointer-events: none;
-      z-index: 1000;
+      z-index: 1100;
     }
   `;
 
@@ -429,6 +430,12 @@ class RainradarCard extends LitElement {
   _initMap() {
     const container = this.shadowRoot?.getElementById("map");
     if (!container) return;
+    if (this._map) {
+      try {
+        this._map.invalidateSize(true);
+      } catch (e) {}
+      return;
+    }
 
     const center = this._getConfiguredCenter();
     const initialCenter = center ? [center.lat, center.lon] : DEFAULT_CENTER;
@@ -512,9 +519,7 @@ class RainradarCard extends LitElement {
     this.style.setProperty("--rainradar-card-height", `${height}px`);
 
     return html`
-      <div class="controls">
-        <div id="map"></div>
-      </div>
+      <div id="map"></div>
 
       ${this._loading ? html`
         <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:var(--ha-card-background,#fff);padding:16px 24px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);text-align:center;">
@@ -523,7 +528,7 @@ class RainradarCard extends LitElement {
         </div>
       ` : nothing}
 
-      <div style="position:absolute;inset:0;z-index:1100;pointer-events:none;">
+      <div class="controls">
         <div style="position:absolute;top:8px;left:8px;display:flex;gap:4px;pointer-events:none;">
         <div style="display:flex;gap:2px;background:var(--ha-card-background,#fff);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.15);overflow:hidden;pointer-events:auto;font-size:12px;">
           <button class="${this.config.mode === "5min" ? "active" : ""}"

@@ -49,6 +49,7 @@ class RainradarCard extends LitElement {
     this._lastRadarUpdate = null;
     this._centerMarker = null;
     this._showingNoData = false;
+    this._resizeObserver = null;
   }
 
   static styles = css`
@@ -425,6 +426,18 @@ class RainradarCard extends LitElement {
   firstUpdated() {
     this._loadLeafletCSS();
     requestAnimationFrame(() => this._initMap());
+    // Observe host size changes to keep Leaflet tiles aligned when the card is resized
+    try {
+      this._resizeObserver = new ResizeObserver(() => {
+        if (this._map && typeof this._map.invalidateSize === "function") {
+          // small delay allows layout to settle
+          setTimeout(() => this._map.invalidateSize(true), 80);
+        }
+      });
+      this._resizeObserver.observe(this);
+    } catch (e) {
+      // ResizeObserver not supported -> ignore
+    }
   }
 
   _initMap() {
@@ -506,6 +519,10 @@ class RainradarCard extends LitElement {
     if (this._map) {
       this._map.remove();
       this._map = null;
+    }
+    if (this._resizeObserver) {
+      try { this._resizeObserver.disconnect(); } catch (e) {}
+      this._resizeObserver = null;
     }
   }
 

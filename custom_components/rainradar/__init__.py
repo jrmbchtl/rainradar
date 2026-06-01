@@ -61,6 +61,13 @@ async def _register_card(hass: HomeAssistant) -> None:
         resources = hass.data.get("lovelace", {}).get("resources")
         if resources is not None and hasattr(resources, "async_create_item"):
             items = await resources.async_items()
+            # Remove stale resources from previous builds (mtime-based URLs)
+            for item in items:
+                if item.get("url", "").startswith(f"/{DOMAIN}/rainradar-card.js?") and item.get("url") != url:
+                    try:
+                        await resources.async_delete_item(item["id"])
+                    except Exception:
+                        pass
             if not any(r.get("url") == url for r in items):
                 await resources.async_create_item({
                     "res_type": "module",

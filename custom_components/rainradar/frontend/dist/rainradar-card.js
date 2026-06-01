@@ -18,6 +18,38 @@ var RainradarCard=function(t){"use strict";const e=globalThis,i=e.ShadowRoot&&(v
       z-index: 0;
     }
 
+    #map .leaflet-pane {
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+
+    #map .leaflet-tile-pane {
+      z-index: 200;
+    }
+
+    #map .leaflet-overlay-pane {
+      z-index: 400;
+    }
+
+    #map .leaflet-shadow-pane {
+      z-index: 500;
+    }
+
+    #map .leaflet-marker-pane {
+      z-index: 600;
+    }
+
+    #map .leaflet-popup-pane {
+      z-index: 700;
+    }
+
+    #map .leaflet-layer {
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+
     .controls {
       position: absolute;
       inset: 0;
@@ -89,7 +121,7 @@ var RainradarCard=function(t){"use strict";const e=globalThis,i=e.ShadowRoot&&(v
         <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#ff0000;display:inline-block;"></span> heavy</div>
         <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#ff00ff;display:inline-block;"></span> extreme</div>
       </div>
-    `}}customElements.define("rainradar-card",pt);return customElements.define("rainradar-card-editor",class extends ht{static properties={hass:{type:Object},config:{type:Object}};setConfig(t){this.config={...pt.getStubConfig(),...t}}_handleChange(){const t=new CustomEvent("config-changed",{detail:{config:this.config},bubbles:!0,composed:!0});this.dispatchEvent(t)}_modeChanged(t){this.config.mode=t.target.value,this._handleChange()}_defaultLocChanged(t){this.config.default_location=t.target.value,this._handleChange()}render(){return this.hass&&this.config?U`
+    `}}try{customElements.define("rainradar-card",pt)}catch(M){}class mt extends ht{static properties={hass:{type:Object},config:{type:Object}};setConfig(t){this.config={...pt.getStubConfig(),...t}}_handleChange(){const t=new CustomEvent("config-changed",{detail:{config:this.config},bubbles:!0,composed:!0});this.dispatchEvent(t)}_modeChanged(t){this.config.mode=t.target.value,this._handleChange()}_defaultLocChanged(t){this.config.default_location=t.target.value,this._handleChange()}render(){return this.hass&&this.config?U`
       <ha-form
         .hass=${this.hass}
         .data=${this.config}
@@ -97,4 +129,4 @@ var RainradarCard=function(t){"use strict";const e=globalThis,i=e.ShadowRoot&&(v
         .computeLabel=${t=>t.label}
         @value-changed=${this._handleChange}
       ></ha-form>
-    `:q}}),window.customCards=window.customCards||[],window.customCards.push({type:"rainradar-card",name:"Rainradar",description:"DWD rain radar map with animation for Germany",preview:!0}),t.RainradarCard=pt,t}({});
+    `:q}}try{customElements.define("rainradar-card-editor",mt)}catch(M){}return window.customCards=window.customCards||[],window.customCards.push({type:"rainradar-card",name:"Rainradar",description:"DWD rain radar map with animation for Germany",preview:!0}),t.RainradarCard=pt,t}({});

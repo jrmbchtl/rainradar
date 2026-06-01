@@ -72,6 +72,38 @@ class RainradarCard extends LitElement {
       z-index: 0;
     }
 
+    #map .leaflet-pane {
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+
+    #map .leaflet-tile-pane {
+      z-index: 200;
+    }
+
+    #map .leaflet-overlay-pane {
+      z-index: 400;
+    }
+
+    #map .leaflet-shadow-pane {
+      z-index: 500;
+    }
+
+    #map .leaflet-marker-pane {
+      z-index: 600;
+    }
+
+    #map .leaflet-popup-pane {
+      z-index: 700;
+    }
+
+    #map .leaflet-layer {
+      position: absolute;
+      left: 0;
+      top: 0;
+    }
+
     .controls {
       position: absolute;
       inset: 0;
@@ -604,7 +636,7 @@ class RainradarCard extends LitElement {
   }
 }
 
-customElements.define("rainradar-card", RainradarCard);
+try { customElements.define("rainradar-card", RainradarCard); } catch (e) {}
 
 class RainradarCardEditor extends LitElement {
   static properties = {
@@ -674,7 +706,7 @@ class RainradarCardEditor extends LitElement {
   }
 }
 
-customElements.define("rainradar-card-editor", RainradarCardEditor);
+try { customElements.define("rainradar-card-editor", RainradarCardEditor); } catch (e) {}
 
 window.customCards = window.customCards || [];
 window.customCards.push({

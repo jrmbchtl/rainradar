@@ -34,13 +34,7 @@ async def _register_card(hass: HomeAssistant) -> None:
     if not os.path.isfile(card_path):
         _LOGGER.warning("Rainradar card JS not found at %s", card_path)
         return
-    # Append a cache-busting version based on the file modification time so browsers
-    # pick up rebuilt bundles without manual cache clearing.
-    try:
-        mtime = int(os.path.getmtime(card_path))
-    except Exception:
-        mtime = 0
-    url = f"/{DOMAIN}/rainradar-card.js?v={mtime}"
+    url = f"/{DOMAIN}/rainradar-card.js"
 
     # HA 2025+: async static path registration API
     try:
@@ -54,16 +48,17 @@ async def _register_card(hass: HomeAssistant) -> None:
             hass.http.register_static_path(url, card_path, cache_headers=False)
     except Exception as exc:
         _LOGGER.warning("Failed to register static path %s: %s", url, exc)
-        return
 
     # HA 2025+: Lovelace resource system
     try:
         resources = hass.data.get("lovelace", {}).get("resources")
         if resources is not None and hasattr(resources, "async_create_item"):
             items = await resources.async_items()
-            # Remove stale resources from previous builds (mtime-based URLs)
+            # Remove any previously registered resources for this card
             for item in items:
-                if item.get("url", "").startswith(f"/{DOMAIN}/rainradar-card.js?") and item.get("url") != url:
+                if item.get("url", "").startswith(url):
+                    if item.get("url") == url:
+                        continue
                     try:
                         await resources.async_delete_item(item["id"])
                     except Exception:

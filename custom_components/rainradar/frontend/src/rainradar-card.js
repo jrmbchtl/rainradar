@@ -219,7 +219,7 @@ class RainradarCard extends LitElement {
         time: time,
         format: "image/png",
         transparent: true,
-        version: "1.3.0",
+        version: "1.1.1",
         opacity: 0,
         maxZoom: 14,
         minZoom: 4,
@@ -278,7 +278,7 @@ class RainradarCard extends LitElement {
     }
     // Ensure Leaflet recalculates sizes so tiles align correctly
     if (this._map && typeof this._map.invalidateSize === "function") {
-      setTimeout(() => this._map.invalidateSize(true), 120);
+      setTimeout(() => this._map.invalidateSize(false), 120);
     }
   }
 
@@ -431,7 +431,7 @@ class RainradarCard extends LitElement {
       this._resizeObserver = new ResizeObserver(() => {
         if (this._map && typeof this._map.invalidateSize === "function") {
           // small delay allows layout to settle
-          setTimeout(() => this._map.invalidateSize(true), 80);
+          setTimeout(() => this._map.invalidateSize(false), 80);
         }
       });
       this._resizeObserver.observe(this);
@@ -445,7 +445,7 @@ class RainradarCard extends LitElement {
     if (!container) return;
     if (this._map) {
       try {
-        this._map.invalidateSize(true);
+        this._map.invalidateSize(false);
       } catch (e) {}
       return;
     }
@@ -475,7 +475,7 @@ class RainradarCard extends LitElement {
       // Give the layout a moment then invalidate size to avoid tile misplacement
       setTimeout(() => {
         try {
-          this._map.invalidateSize(true);
+          this._map.invalidateSize(false);
         } catch (e) {
           // ignore
         }
@@ -500,7 +500,7 @@ class RainradarCard extends LitElement {
       }
       // Ensure map keeps tiles aligned after state-driven updates
       try {
-        this._map.invalidateSize(true);
+        this._map.invalidateSize(false);
       } catch (e) {}
     }
 

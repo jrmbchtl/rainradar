@@ -34,7 +34,13 @@ async def _register_card(hass: HomeAssistant) -> None:
     if not os.path.isfile(card_path):
         _LOGGER.warning("Rainradar card JS not found at %s", card_path)
         return
-    url = f"/{DOMAIN}/rainradar-card.js"
+    # Append a cache-busting version based on the file modification time so browsers
+    # pick up rebuilt bundles without manual cache clearing.
+    try:
+        mtime = int(os.path.getmtime(card_path))
+    except Exception:
+        mtime = 0
+    url = f"/{DOMAIN}/rainradar-card.js?v={mtime}"
 
     # HA 2025+: async static path registration API
     try:

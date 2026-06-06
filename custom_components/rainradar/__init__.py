@@ -137,14 +137,30 @@ async def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
     await asyncio.to_thread(cache_dir.mkdir, parents=True, exist_ok=True)
     url = frames_url_prefix(entry_id)
 
-    if hasattr(hass.http, "async_register_static_paths"):
-        from homeassistant.components.http import StaticPathConfig
+    _LOGGER.info(
+        "Rainradar: registering frames static path url=%s dir=%s exists=%s",
+        url,
+        cache_dir,
+        cache_dir.exists(),
+    )
 
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(url, str(cache_dir), cache_headers=False)]
+    try:
+        if hasattr(hass.http, "async_register_static_paths"):
+            from homeassistant.components.http import StaticPathConfig
+
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(url, str(cache_dir), cache_headers=False)]
+            )
+        else:
+            hass.http.register_static_path(url, str(cache_dir), cache_headers=False)
+        _LOGGER.info("Rainradar: frames static path registered for %s", entry_id)
+    except Exception as exc:
+        _LOGGER.error(
+            "Rainradar: failed to register frames static path for %s: %s",
+            entry_id,
+            exc,
         )
-    else:
-        hass.http.register_static_path(url, str(cache_dir), cache_headers=False)
+        raise
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

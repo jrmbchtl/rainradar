@@ -119,10 +119,14 @@ class RainradarCard extends LitElement {
 
   getLayoutOptions() {
     return {
-      grid_columns: "auto",
-      grid_rows: "auto",
+      grid_columns: 4,
+      grid_rows: 2,
       grid_columns_max: 4,
     };
+  }
+
+  getCardSize() {
+    return 4;
   }
 
   _getEntityLatLon(entityId) {
@@ -155,7 +159,13 @@ class RainradarCard extends LitElement {
     const past = Array.isArray(frames.past) ? frames.past : [];
     const nowcast = Array.isArray(frames.nowcast) ? frames.nowcast : [];
     const forecast = Array.isArray(frames.forecast) ? frames.forecast : [];
-    return { past, nowcast, forecast, lastUpdate: attrs.last_update || null };
+    return {
+      past,
+      nowcast,
+      forecast,
+      lastUpdate: attrs.last_update || null,
+      frameError: attrs.frame_error || null,
+    };
   }
 
   _getFramesAttributes() {
@@ -217,8 +227,13 @@ class RainradarCard extends LitElement {
         : [...past, ...nowcast];
 
     if (!this._frames.length) {
-      this._timeLabel = "No frames available";
+      this._timeLabel = data.frameError
+        ? `No frames: ${data.frameError}`
+        : "No frames available — waiting for next update";
       this._showingNoData = true;
+      this._retryTimer = setTimeout(() => {
+        if (this._map) this._buildFrames();
+      }, DATA_RETRY_MS);
       this.requestUpdate();
       return;
     }

@@ -35,7 +35,7 @@ from .const import (
     DWD_WMS_FORECAST_LAYER,
     DWD_WMS_FORECAST_STYLE,
     DWD_WMS_VERSION,
-    RADAR_BBOX,
+    RADAR_BBOX_MERCATOR,
     RADAR_IMG_WIDTH,
     RADAR_IMG_HEIGHT,
     PAST_FRAMES,
@@ -82,9 +82,9 @@ class RainradarCoordinator(DataUpdateCoordinator):
 
         self.stations: list[DWDStation] = []
         self._session = aiohttp.ClientSession()
-        self._frame_generation = 0
         self._cache_dir: Path = frames_cache_dir(hass.config.path(""), entry.entry_id)
         self._url_prefix: str = frames_url_prefix(entry.entry_id)
+        self._last_frame_error: str | None = None
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -190,8 +190,8 @@ class RainradarCoordinator(DataUpdateCoordinator):
         return (
             f"{DWD_WMS_BASE}?service=WMS&version={DWD_WMS_VERSION}"
             f"&request=GetMap&layers={layer}&styles={style}"
-            f"&bbox={RADAR_BBOX}&width={RADAR_IMG_WIDTH}&height={RADAR_IMG_HEIGHT}"
-            f"&format=image/png&srs=EPSG:4326&time={ts}"
+            f"&bbox={RADAR_BBOX_MERCATOR}&width={RADAR_IMG_WIDTH}&height={RADAR_IMG_HEIGHT}"
+            f"&format=image/png&srs=EPSG:3857&time={ts}"
         )
 
     def _frame_path(self, layer: str, timestamp: str) -> Path:
@@ -202,26 +202,26 @@ class RainradarCoordinator(DataUpdateCoordinator):
 
     async def _download_frame(
         self, layer: str, style: str, timestamp: str, sem: asyncio.Semaphore
-    ) -> tuple[str, str, bool]:
+    ) -> tuple[str, str, bool, str | None]:
         path = self._frame_path(layer, timestamp)
         if path.is_file():
-            return (layer, timestamp, True)
+            return (layer, timestamp, True, None)
         url = self._wms_url(layer, style, timestamp)
         try:
             async with sem:
                 async with asyncio.timeout(30):
                     async with self.session.get(url) as resp:
                         if resp.status != 200:
-                            _LOGGER.debug(
-                                "Frame fetch %s @ %s returned %s", layer, timestamp, resp.status
-                            )
-                            return (layer, timestamp, False)
+                            return (layer, timestamp, False, f"HTTP {resp.status}")
                         data = await resp.read()
+            if len(data) < 200:
+                return (layer, timestamp, False, "empty response body")
             await asyncio.to_thread(self._write_frame, path, data)
-            return (layer, timestamp, True)
+            return (layer, timestamp, True, None)
+        except asyncio.TimeoutError:
+            return (layer, timestamp, False, "timeout after 30s")
         except Exception as exc:
-            _LOGGER.debug("Frame fetch failed %s @ %s: %s", layer, timestamp, exc)
-            return (layer, timestamp, False)
+            return (layer, timestamp, False, f"{type(exc).__name__}: {exc}")
 
     @staticmethod
     def _write_frame(path: Path, data: bytes) -> None:
@@ -247,7 +247,21 @@ class RainradarCoordinator(DataUpdateCoordinator):
                     DWD_WMS_FORECAST_LAYER, DWD_WMS_FORECAST_STYLE, ts, sem
                 )
             )
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        failure_counts: dict[str, int] = {}
+        first_error: str | None = None
+        for r in results:
+            if isinstance(r, BaseException):
+                if first_error is None:
+                    first_error = f"{type(r).__name__}: {r}"
+                failure_counts["exception"] = failure_counts.get("exception", 0) + 1
+                continue
+            _, _, ok, err = r
+            if not ok and err:
+                failure_counts[err] = failure_counts.get(err, 0) + 1
+                if first_error is None:
+                    first_error = err
 
         result: dict[str, list[dict]] = {}
         for kind in ("past", "nowcast"):
@@ -267,14 +281,51 @@ class RainradarCoordinator(DataUpdateCoordinator):
                     {"ts": ts, "url": self._frame_url(DWD_WMS_FORECAST_LAYER, ts)}
                 )
         result["forecast"] = forecast_entries
+
+        total_requested = sum(len(frames.get(k, [])) for k in ("past", "nowcast", "forecast"))
+        total_ok = sum(
+            len(result.get(k, [])) for k in ("past", "nowcast", "forecast")
+        )
+        if total_requested > 0 and total_ok == 0:
+            self._last_frame_error = first_error or "all frame fetches failed"
+            _LOGGER.warning(
+                "Rainradar: 0/%d frames fetched. First error: %s | failure breakdown: %s",
+                total_requested,
+                first_error,
+                failure_counts,
+            )
+        elif total_ok < total_requested:
+            self._last_frame_error = (
+                f"{total_requested - total_ok}/{total_requested} frames failed; first: {first_error}"
+            )
+            _LOGGER.debug(
+                "Rainradar: %d/%d frames fetched successfully. First failure: %s",
+                total_ok,
+                total_requested,
+                first_error,
+            )
+        else:
+            self._last_frame_error = None
+
         return result
 
     async def _evict_old_frames(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
-        for layer_dir in self._cache_dir.iterdir() if self._cache_dir.exists() else []:
+        if not self._cache_dir.exists():
+            return
+        try:
+            layer_dirs = list(self._cache_dir.iterdir())
+        except OSError as exc:
+            _LOGGER.debug("Frame cache dir not iterable: %s", exc)
+            return
+        for layer_dir in layer_dirs:
             if not layer_dir.is_dir():
                 continue
-            for f in layer_dir.iterdir():
+            try:
+                files = list(layer_dir.iterdir())
+            except OSError:
+                continue
+            for f in files:
                 if not f.is_file() or not f.name.endswith(".png"):
                     continue
                 ts_part = f.stem.split("T")[0]
@@ -357,7 +408,6 @@ class RainradarCoordinator(DataUpdateCoordinator):
             for sid, task in obs_tasks.items():
                 obs_results[sid] = await task
 
-            self._frame_generation += 1
             frame_ts = self._generate_radar_timestamps()
             frame_urls = await self._prefetch_frames(frame_ts)
             await self._evict_old_frames()
@@ -379,6 +429,7 @@ class RainradarCoordinator(DataUpdateCoordinator):
                 "radar_frames": frame_urls,
                 "stations_count": len(self.stations),
                 "last_update": datetime.now(timezone.utc).isoformat(),
+                "frame_error": self._last_frame_error,
             }
 
         except Exception as exc:

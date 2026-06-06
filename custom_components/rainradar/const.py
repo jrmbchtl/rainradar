@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from homeassistant.const import __version__ as HA_VERSION  # noqa: F401
@@ -23,12 +24,6 @@ PAST_FRAMES = 24
 NOWCAST_FRAMES = 24
 FORECAST_FRAMES = 14
 FRAME_INTERVAL_MIN = 5
-
-# Germany geographic extent for the radar composite (WMS 1.1.1 EPSG:4326
-# bbox order is lon_min,lat_min,lon_max,lat_max).
-RADAR_BBOX = "5.7,47.27,15.0,55.05"
-RADAR_IMG_WIDTH = 900
-RADAR_IMG_HEIGHT = 900
 
 DWD_WMS_BASE = "https://maps.dwd.de/geoserver/dwd/ows"
 DWD_OPENDATA = "https://opendata.dwd.de"
@@ -84,3 +79,27 @@ def normalize_entity_list(value: object) -> list[str]:
     if isinstance(value, list):
         return [item for item in value if isinstance(item, str)]
     return []
+
+
+def mercator_bbox(lon_min: float, lat_min: float, lon_max: float, lat_max: float) -> str:
+    """Project a lon/lat bbox to Web Mercator (EPSG:3857) meters for WMS 1.1.1.
+
+    The DWD WMS rejects lat/lon degrees when `srs=EPSG:3857`; the bbox must
+    be in projected meters. Computing this server-side keeps the radar PNG
+    aligned to the EPSG:3857 OSM base layer in the Leaflet card, so the
+    imageOverlay places the composite correctly without per-tile requests.
+    """
+    x_min = lon_min * 20037508.342789244 / 180.0
+    x_max = lon_max * 20037508.342789244 / 180.0
+    y_min = math.log(math.tan(math.pi / 4 + lat_min * math.pi / 360.0)) * 6378137.0
+    y_max = math.log(math.tan(math.pi / 4 + lat_max * math.pi / 360.0)) * 6378137.0
+    return f"{x_min:.2f},{y_min:.2f},{x_max:.2f},{y_max:.2f}"
+
+
+# Germany geographic extent for the radar composite. WMS 1.1.1 with
+# `srs=EPSG:4326` expects bbox in lon,lat order; with `srs=EPSG:3857` it
+# expects bbox in projected Mercator meters (x_min,y_min,x_max,y_max).
+RADAR_BBOX_LONLAT = (5.7, 47.27, 15.0, 55.05)
+RADAR_BBOX_MERCATOR = mercator_bbox(*RADAR_BBOX_LONLAT)
+RADAR_IMG_WIDTH = 900
+RADAR_IMG_HEIGHT = 900

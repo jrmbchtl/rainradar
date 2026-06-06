@@ -189,6 +189,7 @@ class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
         return {
             "frames": data.get("radar_frames") or {},
             "last_update": data.get("last_update"),
+            "frame_error": data.get("frame_error"),
         }
 
 

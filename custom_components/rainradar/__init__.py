@@ -149,23 +149,42 @@ async def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
         cache_dir.exists(),
     )
 
-    try:
-        if hasattr(hass.http, "async_register_static_paths"):
+    # The async API (`async_register_static_paths`) was added in HA
+    # 2026.x but appears to be a no-op on some installs — the route
+    # never gets attached and every /rainradar/frames/... request
+    # 404s even though the file is on disk. Use the legacy sync
+    # `register_static_path` as the primary path; only fall back to
+    # the async one if the sync method is missing entirely.
+    registered_ok = False
+    if hasattr(hass.http, "register_static_path"):
+        try:
+            hass.http.register_static_path(
+                url, str(cache_dir), cache_headers=False
+            )
+            registered_ok = True
+        except Exception as exc:
+            _LOGGER.warning(
+                "Rainradar: sync register_static_path failed (%s); "
+                "trying async fallback",
+                exc,
+            )
+    if not registered_ok and hasattr(hass.http, "async_register_static_paths"):
+        try:
             from homeassistant.components.http import StaticPathConfig
 
             await hass.http.async_register_static_paths(
                 [StaticPathConfig(url, str(cache_dir), cache_headers=False)]
             )
-        else:
-            hass.http.register_static_path(url, str(cache_dir), cache_headers=False)
+            registered_ok = True
+        except Exception as exc:
+            _LOGGER.error(
+                "Rainradar: async_register_static_paths also failed: %s",
+                exc,
+            )
+            raise
+
+    if registered_ok:
         _LOGGER.info("Rainradar: frames static path registered for %s", entry_id)
-    except Exception as exc:
-        _LOGGER.error(
-            "Rainradar: failed to register frames static path for %s: %s",
-            entry_id,
-            exc,
-        )
-        raise
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

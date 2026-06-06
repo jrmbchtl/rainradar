@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.3.3";
+const CARD_VERSION = "0.3.4";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -11,9 +11,13 @@ const DEFAULT_HOME_ZOOM = 9;
 const FRAME_MS = 150;
 const DATA_RETRY_MS = 3000;
 
+// Must match RADAR_BBOX_LONLAT in const.py. The DWD composite is
+// Germany-only, so we ask the WMS for a much larger area (see
+// const.py comment) — the basemap is then visible all the way to the
+// overlay edge instead of stopping at the German border.
 const RADAR_BOUNDS = [
-  [47.27, 5.7],
-  [55.05, 15.0],
+  [42.0, -2.0],
+  [60.0, 22.0],
 ];
 
 // World-wide bounds: the DWD composite itself only covers Germany,
@@ -547,15 +551,15 @@ class RainradarCard extends LitElement {
     if (!center) return;
 
     const icon = L.divIcon({
-      html: `<div style="display:flex;flex-direction:column;align-items:center;gap:1px;"><ha-icon icon="mdi:map-marker" style="font-size:30px;line-height:30px;color:#d32f2f;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));"></ha-icon><div style="font-size:11px;line-height:1.2;background:rgba(255,255,255,0.98);padding:2px 7px;border-radius:999px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.3);color:#222;font-weight:600;margin-top:-6px;">${center.name}</div></div>`,
+      html: `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;"><div style="font-size:11px;line-height:1.2;background:rgba(255,255,255,0.98);padding:2px 7px;border-radius:999px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.3);color:#222;font-weight:600;order:1;">${center.name}</div><ha-icon icon="mdi:map-marker" style="font-size:30px;line-height:30px;color:#d32f2f;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));order:2;"></ha-icon></div>`,
       className: "",
-      // mdi:map-marker is a teardrop pin; in a 30px font-size box the
-      // tip sits at roughly y=27 (icon has ~3px of internal padding at
-      // the bottom). Anchoring at [centerX, tipY] places the point of
-      // the pin exactly on the marker's lat/lon so it no longer drifts
-      // off the location when zooming.
+      // Layout: text on top, pin below. The pin's teardrop tip sits
+      // near the bottom of the 30px icon (~3px of internal padding),
+      // so in a 64x50 div the tip is at roughly y=47 (label ~15px +
+      // gap 2px + pin offset 30px - tip padding 3px + baseline). The
+      // anchor lands the tip exactly on the marker's lat/lon.
       iconSize: [64, 50],
-      iconAnchor: [32, 27],
+      iconAnchor: [32, 47],
     });
     this._centerMarker = L.marker([center.lat, center.lon], { icon }).addTo(this._map);
   }
@@ -809,7 +813,7 @@ class RainradarCard extends LitElement {
       ${this._showingNoData
         ? html`
             <div
-              style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:rgba(0,0,0,0.88);color:#fff;padding:20px 26px;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.35);text-align:center;max-width:90%;min-width:240px;pointer-events:auto;font-family:var(--paper-font-body1_-_font-family,Roboto,sans-serif);"
+              style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:rgba(20,20,20,0.95);color:#fff;padding:20px 26px;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.5);text-align:center;max-width:90%;min-width:240px;pointer-events:auto;font-family:var(--paper-font-body1_-_font-family,Roboto,sans-serif);border:1px solid rgba(255,255,255,0.08);"
             >
               <ha-icon
                 icon="mdi:radar"
@@ -840,22 +844,20 @@ class RainradarCard extends LitElement {
         : nothing}
 
       <div
-        style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(0,0,0,0.85);background:#fff;padding:2px 8px;border-radius:6px;pointer-events:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;z-index:1099;letter-spacing:0.3px;box-shadow:0 1px 3px rgba(0,0,0,0.25);border:1px solid rgba(0,0,0,0.1);"
+        style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,0.9);background:rgba(20,20,20,0.92);padding:2px 8px;border-radius:6px;pointer-events:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;z-index:1099;letter-spacing:0.3px;box-shadow:0 1px 3px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.08);"
       >
         rainradar v${CARD_VERSION}
       </div>
 
       <div class="controls">
         <div
-          style="position:absolute;top:8px;left:8px;display:flex;gap:0;background:#fff;border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.25);overflow:hidden;pointer-events:auto;font-size:12px;border:1px solid rgba(0,0,0,0.12);"
+          style="position:absolute;top:8px;left:8px;display:flex;gap:0;background:rgba(20,20,20,0.92);border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.5);overflow:hidden;pointer-events:auto;font-size:12px;border:1px solid rgba(255,255,255,0.08);"
         >
           <button
             style="padding:6px 12px;border:none;cursor:pointer;background:${this
               .config.mode === "5min"
               ? "var(--primary-color,#03a9f4)"
-              : "#fff"};color:${this.config.mode === "5min"
-              ? "#fff"
-              : "#222"};font-weight:${this.config.mode === "5min"
+              : "transparent"};color:#fff;font-weight:${this.config.mode === "5min"
               ? "600"
               : "400"}"
             @click=${() => this._setMode("5min")}
@@ -866,9 +868,7 @@ class RainradarCard extends LitElement {
             style="padding:6px 12px;border:none;cursor:pointer;background:${this
               .config.mode === "15min"
               ? "var(--primary-color,#03a9f4)"
-              : "#fff"};color:${this.config.mode === "15min"
-              ? "#fff"
-              : "#222"};font-weight:${this.config.mode === "15min"
+              : "transparent"};color:#fff;font-weight:${this.config.mode === "15min"
               ? "600"
               : "400"}"
             @click=${() => this._setMode("15min")}
@@ -878,34 +878,37 @@ class RainradarCard extends LitElement {
         </div>
 
         <div
-          style="position:absolute;top:48px;right:8px;display:flex;flex-direction:column;gap:2px;pointer-events:auto;"
+          style="position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:6px;pointer-events:auto;align-items:flex-end;"
         >
           <button
-            style="background:#fff;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.25);font-size:16px;font-weight:700;color:#222;line-height:1;border:1px solid rgba(0,0,0,0.12);"
-            @click=${() => this._map?.zoomIn()}
-            title="Zoom in"
+            style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:8px 10px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;border:1px solid rgba(255,255,255,0.08);"
+            @click=${this._recenter}
+            title="Recenter to home"
           >
-            +
+            <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
           </button>
-          <button
-            style="background:#fff;border:none;border-radius:8px;padding:8px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.25);font-size:16px;font-weight:700;color:#222;line-height:1;border:1px solid rgba(0,0,0,0.12);"
-            @click=${() => this._map?.zoomOut()}
-            title="Zoom out"
+          <div
+            style="display:flex;flex-direction:row;gap:6px;"
           >
-            −
-          </button>
+            <button
+              style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);font-size:16px;font-weight:700;color:#fff;line-height:1;border:1px solid rgba(255,255,255,0.08);min-width:34px;"
+              @click=${() => this._map?.zoomIn()}
+              title="Zoom in"
+            >
+              +
+            </button>
+            <button
+              style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);font-size:16px;font-weight:700;color:#fff;line-height:1;border:1px solid rgba(255,255,255,0.08);min-width:34px;"
+              @click=${() => this._map?.zoomOut()}
+              title="Zoom out"
+            >
+              −
+            </button>
+          </div>
         </div>
 
         <button
-          style="position:absolute;top:8px;right:8px;pointer-events:auto;background:#fff;border:none;border-radius:8px;padding:8px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center;color:#222;font-size:18px;border:1px solid rgba(0,0,0,0.12);"
-          @click=${this._recenter}
-          title="Recenter to home"
-        >
-          <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
-        </button>
-
-        <button
-          style="position:absolute;top:48px;left:8px;pointer-events:auto;background:#fff;border:none;border-radius:8px;padding:6px 8px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center;color:#222;font-size:11px;font-weight:600;line-height:1;border:1px solid rgba(0,0,0,0.12);"
+          style="position:absolute;top:96px;left:8px;pointer-events:auto;background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 8px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;line-height:1;border:1px solid rgba(255,255,255,0.08);"
           @click=${() => { this._diagOpen = !this._diagOpen; this.requestUpdate(); }}
           title="Toggle diagnostic panel"
         >
@@ -913,10 +916,10 @@ class RainradarCard extends LitElement {
         </button>
 
         <div
-          style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:#fff;padding:6px 14px;border-radius:24px;box-shadow:0 2px 8px rgba(0,0,0,0.3);font-size:13px;pointer-events:auto;border:1px solid rgba(0,0,0,0.12);"
+          style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:rgba(20,20,20,0.92);padding:6px 14px;border-radius:24px;box-shadow:0 2px 8px rgba(0,0,0,0.5);font-size:13px;pointer-events:auto;border:1px solid rgba(255,255,255,0.08);"
         >
           <button
-            style="background:none;border:none;cursor:pointer;padding:4px 6px;border-radius:4px;display:flex;align-items:center;color:#222;font-size:16px;"
+            style="background:none;border:none;cursor:pointer;padding:4px 6px;border-radius:4px;display:flex;align-items:center;color:#fff;font-size:16px;"
             @click=${this._togglePlay}
             title=${this._playing ? "Pause" : "Play"}
           >
@@ -929,11 +932,11 @@ class RainradarCard extends LitElement {
             max=${maxIdx}
             .value=${this._currentIndex}
             @input=${this._onSlider}
-            style="width:100px;height:4px;-webkit-appearance:none;background:var(--secondary-text-color,#999);border-radius:2px;outline:none;cursor:pointer;"
+            style="width:100px;height:4px;-webkit-appearance:none;background:rgba(255,255,255,0.25);border-radius:2px;outline:none;cursor:pointer;"
           />
 
           <span
-            style="font-size:12px;font-weight:600;color:#222;min-width:72px;text-align:center;font-variant-numeric:tabular-nums;"
+            style="font-size:12px;font-weight:600;color:#fff;min-width:72px;text-align:center;font-variant-numeric:tabular-nums;"
             >${this._timeLabel}</span
           >
 
@@ -945,7 +948,7 @@ class RainradarCard extends LitElement {
                   ? "700"
                   : "400"};color:${this._speed === s
                   ? "var(--primary-color,#03a9f4)"
-                  : "#333"}"
+                  : "rgba(255,255,255,0.75)"}"
                 @click=${() => this._setSpeed(s)}
               >
                 ${s === 1 ? "1×" : s === 0.5 ? "½×" : "2×"}
@@ -956,7 +959,7 @@ class RainradarCard extends LitElement {
       </div>
 
       <div
-        style="position:absolute;bottom:76px;right:8px;z-index:1100;background:#fff;padding:6px 10px;border-radius:8px;font-size:11px;box-shadow:0 2px 6px rgba(0,0,0,0.25);line-height:1.6;pointer-events:auto;color:#222;border:1px solid rgba(0,0,0,0.12);min-width:120px;"
+        style="position:absolute;bottom:76px;right:8px;z-index:1100;background:rgba(20,20,20,0.92);padding:6px 10px;border-radius:8px;font-size:11px;box-shadow:0 2px 6px rgba(0,0,0,0.5);line-height:1.6;pointer-events:auto;color:#fff;border:1px solid rgba(255,255,255,0.08);min-width:120px;"
       >
         <div style="font-weight:700;margin-bottom:4px;font-size:11px;">DWD precipitation</div>
         <div style="display:flex;align-items:center;gap:6px;">

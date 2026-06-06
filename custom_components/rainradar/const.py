@@ -35,7 +35,7 @@ DWD_WMS_FORECAST_STYLE = "icon-eu_reg00625_fd_sl_totprec01h_lawa"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.3.3"
+INTEGRATION_VERSION = "0.3.4"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -62,7 +62,13 @@ def frames_cache_dir(hass_config_path: str, entry_id: str) -> Path:
 
 def frames_url_prefix(entry_id: str) -> str:
     """Return the URL prefix under which prefetched frames are served."""
-    return f"/rainradar/frames/{entry_id}"
+    # Trailing slash matters: HA's StaticPathConfig treats the prefix as
+    # a directory and aiohttp's static-file route only matches paths
+    # strictly under it. Without the trailing slash, a request for
+    # /rainradar/frames/<id>/Niederschlagsradar/foo.png can fail to
+    # match and the static handler returns 404 even when the file is
+    # on disk.
+    return f"/rainradar/frames/{entry_id}/"
 
 
 def safe_frame_filename(timestamp: str) -> str:
@@ -96,10 +102,18 @@ def mercator_bbox(lon_min: float, lat_min: float, lon_max: float, lat_max: float
     return f"{x_min:.2f},{y_min:.2f},{x_max:.2f},{y_max:.2f}"
 
 
-# Germany geographic extent for the radar composite. WMS 1.1.1 with
-# `srs=EPSG:4326` expects bbox in lon,lat order; with `srs=EPSG:3857` it
-# expects bbox in projected Mercator meters (x_min,y_min,x_max,y_max).
-RADAR_BBOX_LONLAT = (5.7, 47.27, 15.0, 55.05)
+# Geographic extent for the radar composite. The DWD composite is
+# Germany-only, so the actual radar data ends at the German border,
+# but we ask the WMS for a much larger area so the basemap is
+# visible up to the overlay edge instead of hitting a hard "cut-off"
+# right outside the German border (storms rolling in from France
+# look broken otherwise). Outside Germany the WMS returns
+# transparent pixels and the OSM base shows through.
+#
+# WMS 1.1.1 with `srs=EPSG:4326` expects bbox in lon,lat order; with
+# `srs=EPSG:3857` it expects bbox in projected Mercator meters
+# (x_min,y_min,x_max,y_max). Aspect ratio is kept ~3:2 to match.
+RADAR_BBOX_LONLAT = (-2.0, 42.0, 22.0, 60.0)
 RADAR_BBOX_MERCATOR = mercator_bbox(*RADAR_BBOX_LONLAT)
-RADAR_IMG_WIDTH = 900
+RADAR_IMG_WIDTH = 1200
 RADAR_IMG_HEIGHT = 900

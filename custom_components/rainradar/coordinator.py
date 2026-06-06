@@ -204,7 +204,7 @@ class RainradarCoordinator(DataUpdateCoordinator):
         return self._cache_dir / layer / safe_frame_filename(timestamp)
 
     def _frame_url(self, layer: str, timestamp: str) -> str:
-        return f"{self._url_prefix}{layer}/{safe_frame_filename(timestamp)}"
+        return f"{self._url_prefix}/{layer}/{safe_frame_filename(timestamp)}"
 
     async def _download_frame(
         self, layer: str, style: str, timestamp: str, sem: asyncio.Semaphore

@@ -35,7 +35,7 @@ DWD_WMS_FORECAST_STYLE = "icon-eu_reg00625_fd_sl_totprec01h_lawa"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.3.4"
+INTEGRATION_VERSION = "0.3.5"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -62,13 +62,13 @@ def frames_cache_dir(hass_config_path: str, entry_id: str) -> Path:
 
 def frames_url_prefix(entry_id: str) -> str:
     """Return the URL prefix under which prefetched frames are served."""
-    # Trailing slash matters: HA's StaticPathConfig treats the prefix as
-    # a directory and aiohttp's static-file route only matches paths
-    # strictly under it. Without the trailing slash, a request for
-    # /rainradar/frames/<id>/Niederschlagsradar/foo.png can fail to
-    # match and the static handler returns 404 even when the file is
-    # on disk.
-    return f"/rainradar/frames/{entry_id}/"
+    # NOTE: must NOT end with a slash. aiohttp's StaticResource (used by
+    # HA 2026.x's async_register_static_paths) asserts:
+    #     prefix in ("", "/") or not prefix.endswith("/")
+    # A trailing slash raises AssertionError at registration time and
+    # the static handler never gets attached, so every frame request
+    # 404s even when the file is on disk.
+    return f"/rainradar/frames/{entry_id}"
 
 
 def safe_frame_filename(timestamp: str) -> str:

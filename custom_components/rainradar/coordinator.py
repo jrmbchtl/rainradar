@@ -85,6 +85,22 @@ class RainradarCoordinator(DataUpdateCoordinator):
         self._cache_dir: Path = frames_cache_dir(hass.config.path(""), entry.entry_id)
         self._url_prefix: str = frames_url_prefix(entry.entry_id)
         self._last_frame_error: str | None = None
+        # Track whether we've already walked the cache dir to neutralise
+        # any frames that were downloaded before PIL was wired up. The
+        # pass is idempotent but costs a few seconds per frame, so we run
+        # it exactly once per coordinator instance.
+        self._cache_reprocessed = False
+        try:
+            from PIL import Image  # noqa: F401
+
+            self._pil_available = True
+        except ImportError:
+            self._pil_available = False
+            _LOGGER.warning(
+                "Rainradar: Pillow is not importable; frame PNGs will not "
+                "be neutralized. Install Pillow (pip install Pillow) in the "
+                "Home Assistant environment for transparent radar backgrounds."
+            )
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -183,21 +199,35 @@ class RainradarCoordinator(DataUpdateCoordinator):
                     "%Y-%m-%dT%H:%M:%SZ"
                 )
             )
+        # The nowcast already covers the first ~2 h at 5-min resolution.
+        # The ICON-D2 forecast is hourly, so it can't replace the nowcast
+        # without losing resolution; starting it at the top of the current
+        # hour (the previous behaviour) made the timeline "jump back" from
+        # ~now+2h to ~now+0h and confused the UI. Round `now+2h` up to
+        # the top of the next hour so the forecast always starts at or
+        # after the last nowcast frame and the timeline stays continuous.
         forecast: list[str] = []
-        now_forecast = now.replace(minute=0, second=0, microsecond=0)
+        forecast_anchor = now + timedelta(hours=2)
+        forecast_start = forecast_anchor.replace(minute=0, second=0, microsecond=0)
+        if forecast_anchor > forecast_start:
+            forecast_start += timedelta(hours=1)
         for i in range(FORECAST_FRAMES):
             forecast.append(
-                (now_forecast + timedelta(hours=i)).strftime("%Y-%m-%dT%H:00:00Z")
+                (forecast_start + timedelta(hours=i)).strftime("%Y-%m-%dT%H:00:00Z")
             )
         return {"past": radar[:PAST_FRAMES], "nowcast": radar[PAST_FRAMES:], "forecast": forecast}
 
     def _wms_url(self, layer: str, style: str, timestamp: str) -> str:
         ts = quote(timestamp, safe="")
+        # transparent=true makes the WMS itself return alpha=0 for "no
+        # data" pixels instead of an opaque white/grey background. The
+        # PIL pass still flattens "no rain" pixels (which the WMS keeps
+        # opaque) but the bulk of the bbox is now transparent server-side.
         return (
             f"{DWD_WMS_BASE}?service=WMS&version={DWD_WMS_VERSION}"
             f"&request=GetMap&layers={layer}&styles={style}"
             f"&bbox={RADAR_BBOX_MERCATOR}&width={RADAR_IMG_WIDTH}&height={RADAR_IMG_HEIGHT}"
-            f"&format=image/png&srs=EPSG:3857&time={ts}"
+            f"&format=image/png&srs=EPSG:3857&time={ts}&transparent=true"
         )
 
     def _frame_path(self, layer: str, timestamp: str) -> Path:
@@ -360,6 +390,41 @@ class RainradarCoordinator(DataUpdateCoordinator):
     async def _evict_old_frames(self) -> None:
         await asyncio.to_thread(self._evict_old_frames_sync)
 
+    async def _reprocess_cache_once(self) -> None:
+        """Neutralize any pre-PIL frames left over from earlier versions.
+
+        The pass is idempotent (already-transparent pixels stay transparent)
+        so it's safe to run again, but each 1200x900 PNG takes ~1-2 s in
+        pure-Python PIL — we run it at most once per coordinator instance.
+        """
+        if self._cache_reprocessed or not self._pil_available:
+            self._cache_reprocessed = True
+            return
+        self._cache_reprocessed = True
+        await asyncio.to_thread(self._reprocess_cache_sync)
+
+    def _reprocess_cache_sync(self) -> None:
+        if not self._cache_dir.exists():
+            return
+        count = 0
+        try:
+            for layer_dir in self._cache_dir.iterdir():
+                if not layer_dir.is_dir():
+                    continue
+                for f in layer_dir.iterdir():
+                    if f.is_file() and f.name.endswith(".png"):
+                        RainradarCoordinator._neutralize_png_inplace(f)
+                        count += 1
+        except OSError as exc:
+            _LOGGER.debug("Cache reprocess walk failed: %s", exc)
+            return
+        if count:
+            _LOGGER.info(
+                "Rainradar: reprocessed %d cached frame(s) to neutralize "
+                "no-data pixels (one-shot, after PIL was wired up)",
+                count,
+            )
+
     def _evict_old_frames_sync(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
         if not self._cache_dir.exists():
@@ -404,6 +469,12 @@ class RainradarCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict:
         try:
+            # One-shot pass on the first update: any frames left over
+            # from a pre-PIL version get neutralised so the OSM basemap
+            # shows through (instead of the user seeing an opaque
+            # white/grey overlay for the next 6 h until eviction runs).
+            await self._reprocess_cache_once()
+
             if not self.stations:
                 self.stations = await fetch_stations(self.session)
                 _LOGGER.info("Loaded %d DWD stations", len(self.stations))

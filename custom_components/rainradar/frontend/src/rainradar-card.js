@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.3.6";
+const CARD_VERSION = "0.3.7";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -959,20 +959,20 @@ class RainradarCard extends LitElement {
       </div>
 
       <div
-        style="position:absolute;bottom:76px;right:8px;z-index:1100;background:rgba(20,20,20,0.92);padding:6px 10px;border-radius:8px;font-size:11px;box-shadow:0 2px 6px rgba(0,0,0,0.5);line-height:1.6;pointer-events:auto;color:#fff;border:1px solid rgba(255,255,255,0.08);min-width:120px;"
+        style="position:absolute;bottom:76px;right:8px;z-index:1100;background:rgba(20,20,20,0.92);padding:6px 10px;border-radius:8px;font-size:11px;box-shadow:0 2px 6px rgba(0,0,0,0.5);line-height:1.6;pointer-events:auto;color:#fff;border:1px solid rgba(255,255,255,0.08);min-width:138px;"
       >
-        <div style="font-weight:700;margin-bottom:4px;font-size:11px;">DWD precipitation</div>
+        <div style="font-weight:700;margin-bottom:4px;font-size:11px;">DWD precipitation <span style="opacity:0.7;font-weight:400;">(mm/h)</span></div>
         <div style="display:flex;align-items:center;gap:6px;">
-          <span style="width:14px;height:14px;border-radius:3px;background:#00e800;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> light
+          <span style="width:14px;height:14px;border-radius:3px;background:#00e8e8;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> light <span style="opacity:0.6;margin-left:auto;font-size:10px;">0.1&ndash;1</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
-          <span style="width:14px;height:14px;border-radius:3px;background:#0099ff;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> moderate
+          <span style="width:14px;height:14px;border-radius:3px;background:#f0e800;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> moderate <span style="opacity:0.6;margin-left:auto;font-size:10px;">3&ndash;5</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
-          <span style="width:14px;height:14px;border-radius:3px;background:#ff0000;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> heavy
+          <span style="width:14px;height:14px;border-radius:3px;background:#ff8000;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> heavy <span style="opacity:0.6;margin-left:auto;font-size:10px;">7&ndash;10</span>
         </div>
         <div style="display:flex;align-items:center;gap:6px;">
-          <span style="width:14px;height:14px;border-radius:3px;background:#d000d0;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> extreme
+          <span style="width:14px;height:14px;border-radius:3px;background:#d000d0;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> extreme <span style="opacity:0.6;margin-left:auto;font-size:10px;">75+</span>
         </div>
       </div>
     `;

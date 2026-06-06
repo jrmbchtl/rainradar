@@ -111,6 +111,7 @@ class RainradarCard extends LitElement {
       height: var(--rainradar-card-height, 420px);
       overflow: hidden;
       box-sizing: border-box;
+      font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
     }
 
     #map {
@@ -121,12 +122,108 @@ class RainradarCard extends LitElement {
       border-radius: var(--ha-card-border-radius, 12px);
       overflow: hidden;
       z-index: 0;
+      background: #ddd;
     }
 
-    #map .leaflet-pane {
+    /*
+     * Leaflet CSS is normally loaded from unpkg, but document-level
+     * <link> stylesheets do NOT cascade into a Shadow DOM. Without these
+     * rules the panes stack at the top-left, the attribution control
+     * floats unstyled, and the map only "partially" renders. The
+     * critical subset of leaflet.css is duplicated here.
+     */
+    #map .leaflet-pane,
+    #map .leaflet-tile,
+    #map .leaflet-marker-icon,
+    #map .leaflet-marker-shadow,
+    #map .leaflet-tile-container,
+    #map .leaflet-pane > svg,
+    #map .leaflet-pane > canvas,
+    #map .leaflet-zoom-box,
+    #map .leaflet-image-layer,
+    #map .leaflet-layer {
       position: absolute;
       left: 0;
       top: 0;
+    }
+    #map .leaflet-container { overflow: hidden; }
+    #map .leaflet-tile-pane    { z-index: 2; }
+    #map .leaflet-overlay-pane { z-index: 4; pointer-events: none; }
+    #map .leaflet-shadow-pane  { z-index: 5; }
+    #map .leaflet-marker-pane  { z-index: 6; }
+    #map .leaflet-tooltip-pane { z-index: 7; }
+    #map .leaflet-popup-pane   { z-index: 8; }
+    #map .leaflet-control { z-index: 800; pointer-events: auto; }
+    #map .leaflet-top,
+    #map .leaflet-bottom {
+      z-index: 1000;
+      pointer-events: none;
+      position: absolute;
+    }
+    #map .leaflet-top { top: 0; }
+    #map .leaflet-right { right: 0; position: absolute; }
+    #map .leaflet-bottom { bottom: 0; }
+    #map .leaflet-left { left: 0; position: absolute; }
+    #map .leaflet-control {
+      float: left;
+      clear: both;
+      pointer-events: auto;
+    }
+    #map .leaflet-right .leaflet-control { float: right; }
+    #map .leaflet-top .leaflet-control { margin-top: 10px; }
+    #map .leaflet-bottom .leaflet-control { margin-bottom: 10px; }
+    #map .leaflet-left .leaflet-control { margin-left: 10px; }
+    #map .leaflet-right .leaflet-control { margin-right: 10px; }
+    #map .leaflet-control-attribution {
+      background: rgba(255, 255, 255, 0.85);
+      margin: 0;
+      padding: 0 5px;
+      color: #333;
+      font: 11px/1.5 "Helvetica Neue", Arial, Helvetica, sans-serif;
+      box-sizing: border-box;
+    }
+    #map .leaflet-control-attribution a {
+      text-decoration: none;
+      color: #0078A8;
+    }
+    #map .leaflet-control-attribution a:hover { text-decoration: underline; }
+    #map .leaflet-control-zoom {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #map .leaflet-control-zoom a {
+      background-color: rgba(255, 255, 255, 0.85);
+      border-bottom: 1px solid #ccc;
+      width: 22px;
+      height: 22px;
+      line-height: 22px;
+      display: block;
+      text-align: center;
+      text-decoration: none;
+      color: black;
+      font: bold 18px "Helvetica Neue", Arial, Helvetica, sans-serif;
+    }
+    #map .leaflet-control-zoom a:hover { background-color: #fff; }
+    #map .leaflet-control-zoom a:first-child {
+      border-top-left-radius: 4px;
+      border-top-right-radius: 4px;
+    }
+    #map .leaflet-control-zoom a:last-child {
+      border-bottom-left-radius: 4px;
+      border-bottom-right-radius: 4px;
+      border-bottom: none;
+    }
+    #map .leaflet-tooltip {
+      position: absolute;
+      padding: 4px 8px;
+      background-color: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      white-space: nowrap;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+      font: 12px/1.4 "Helvetica Neue", Arial, sans-serif;
+      color: #333;
     }
 
     .controls {
@@ -456,40 +553,17 @@ class RainradarCard extends LitElement {
   }
 
   _updateStationMarkers() {
+    // Station dots removed: they had no weather data attached and were
+    // confusing users who expected a temperature / icon on each dot.
+    // The per-location sensors still expose the nearest-station readings.
     if (!this._map) return;
     this._stationMarkers.forEach((m) => this._map.removeLayer(m));
     this._stationMarkers = [];
-
-    const stations = this._getStationsData();
-    if (!stations.length) return;
-
-    const bounds = this._map.getBounds();
-    const sensorState = this.hass?.states?.["sensor.rainradar_stations"];
-    const nameMap = sensorState?.attributes?.station_names || {};
-    stations.forEach((s, i) => {
-      if (!s || typeof s.lat !== "number" || typeof s.lon !== "number") return;
-      if (!bounds.contains([s.lat, s.lon])) return;
-      const label = nameMap[String(i)] || s.name || `${s.lat.toFixed(2)},${s.lon.toFixed(2)}`;
-      const marker = L.circleMarker([s.lat, s.lon], {
-        radius: 3,
-        color: "#03a9f4",
-        fillColor: "#03a9f4",
-        fillOpacity: 0.6,
-        weight: 1,
-      })
-        .bindTooltip(label, { direction: "top", offset: [0, -4] })
-        .addTo(this._map);
-      this._stationMarkers.push(marker);
-    });
   }
 
   _loadLeafletCSS() {
-    if (document.querySelector("#rr-leaflet-css")) return;
-    const link = document.createElement("link");
-    link.id = "rr-leaflet-css";
-    link.rel = "stylesheet";
-    link.href = "https://unpkg.com/leaflet@1.9.4/dist/leaflet.css";
-    document.head.appendChild(link);
+    // No-op: Leaflet's stylesheet cannot cross the Shadow DOM boundary.
+    // The critical rules are duplicated in `static styles` instead.
   }
 
   connectedCallback() {
@@ -727,9 +801,23 @@ class RainradarCard extends LitElement {
       ${this._showingNoData
         ? html`
             <div
-              style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:var(--ha-card-background,#fff);padding:16px 24px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);text-align:center;max-width:80%;"
+              style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:rgba(0,0,0,0.88);color:#fff;padding:20px 26px;border-radius:12px;box-shadow:0 4px 16px rgba(0,0,0,0.35);text-align:center;max-width:90%;min-width:240px;pointer-events:auto;font-family:var(--paper-font-body1_-_font-family,Roboto,sans-serif);"
             >
-              <div>${this._timeLabel || "Loading radar data..."}</div>
+              <ha-icon
+                icon="mdi:radar"
+                style="font-size:36px;color:#03a9f4;--mdc-icon-size:36px;"
+              ></ha-icon>
+              <div style="font-size:16px;font-weight:600;margin-top:10px;">
+                ${sensorAttrs.frame_error ? "Radar fetch failed" : "Loading radar frames…"}
+              </div>
+              <div style="font-size:12px;margin-top:6px;opacity:0.9;line-height:1.4;">
+                ${sensorAttrs.frame_error
+                  ? sensorAttrs.frame_error
+                  : "Prefetching DWD composite PNGs in the background. This usually takes &lt; 60 s on first refresh."}
+              </div>
+              <div style="font-size:10px;margin-top:10px;opacity:0.6;">
+                card v${CARD_VERSION} · last update ${sensorAttrs.last_update || "—"}
+              </div>
             </div>
           `
         : nothing}
@@ -742,6 +830,12 @@ class RainradarCard extends LitElement {
             >${diagText}</pre>
           `
         : nothing}
+
+      <div
+        style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);font-size:9px;color:rgba(0,0,0,0.45);background:rgba(255,255,255,0.7);padding:1px 6px;border-radius:6px;pointer-events:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;z-index:1099;letter-spacing:0.3px;"
+      >
+        rainradar v${CARD_VERSION}
+      </div>
 
       <div class="controls">
         <div

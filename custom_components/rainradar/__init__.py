@@ -55,7 +55,12 @@ async def _register_card(hass: HomeAssistant) -> None:
     if not os.path.isfile(card_path):
         _LOGGER.warning("Rainradar card JS not found at %s", card_path)
         return
-    url = f"/{DOMAIN}/rainradar-card.js"
+    # Version the URL so the browser is forced to refetch when the
+    # integration bumps. HA's static-path cache_headers=False already
+    # tells the browser not to cache, but a stale browser cache from
+    # before that header was set (or an overzealous service worker)
+    # can still pin the old bundle. A versioned path is a fresh URL.
+    url = f"/{DOMAIN}/v{INTEGRATION_VERSION}/rainradar-card.js"
 
     try:
         if hasattr(hass.http, "async_register_static_paths"):
@@ -73,13 +78,25 @@ async def _register_card(hass: HomeAssistant) -> None:
         resources = hass.data.get("lovelace", {}).get("resources")
         if resources is not None and hasattr(resources, "async_create_item"):
             items = await resources.async_items()
+            # Drop any stale rainradar-card resources from previous
+            # versions (different URL paths under the same DOMAIN) so the
+            # resource list does not pile up over time.
             for item in items:
                 item_url = item.get("url", "")
-                if item_url.startswith(url) and item_url != url:
+                if (
+                    f"/{DOMAIN}/" in item_url
+                    and "rainradar-card" in item_url
+                    and item_url != url
+                ):
                     try:
                         await resources.async_delete_item(item["id"])
-                    except Exception:
-                        pass
+                        _LOGGER.info(
+                            "Removed stale rainradar card resource: %s", item_url
+                        )
+                    except Exception as exc:
+                        _LOGGER.debug(
+                            "Failed to remove stale resource %s: %s", item_url, exc
+                        )
             if not any(r.get("url") == url for r in items):
                 await resources.async_create_item(
                     {"res_type": "module", "url": url}

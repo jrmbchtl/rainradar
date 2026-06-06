@@ -95,7 +95,7 @@ class RainradarCard extends LitElement {
   }
 
   setConfig(config) {
-    if (!config) throw new Error("Invalid configuration");
+    if (!config) config = {};
     const merged = { ...RainradarCard.getStubConfig(), ...config };
     const oldConfig = this.config;
     this.config = merged;
@@ -412,53 +412,119 @@ class RainradarCard extends LitElement {
       "--rainradar-card-height",
       `${Number(this.config?.height || 420)}px`
     );
-    this._loadLeafletCSS();
     this._preloaded = new Set();
-    requestAnimationFrame(() => this._initMap());
+    try {
+      this._loadLeafletCSS();
+    } catch (e) {
+      // ignore CSS load failure
+    }
     try {
       this._resizeObserver = new ResizeObserver(() => {
         if (this._map) {
           setTimeout(() => this._map.invalidateSize(false), 80);
+        } else {
+          this._initMap();
         }
       });
       this._resizeObserver.observe(this);
     } catch (e) {
       // ResizeObserver not supported
     }
+    // Defer map init: queueMicrotask lets the host (e.g. the card picker)
+    // finish its first render before we touch Leaflet, and the picker/ size
+    // checks inside _initMap skip the tiny preview pane entirely.
+    queueMicrotask(() => this._initMap());
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    // If the card is moved (e.g. from the card-picker preview into the real
+    // dashboard), retry map init in the new context.
+    if (!this._map) {
+      queueMicrotask(() => this._initMap());
+    }
+  }
+
+  _isInPreviewContext() {
+    let el = this.parentElement;
+    while (el) {
+      const tag = (el.tagName || "").toLowerCase();
+      if (
+        tag === "hui-card-picker" ||
+        tag === "hui-dialog-create-card" ||
+        tag === "hui-card-preview"
+      ) {
+        return true;
+      }
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  _canInitMap() {
+    const container = this.shadowRoot?.getElementById("map");
+    if (!container) return false;
+    const rect = container.getBoundingClientRect();
+    return rect.width >= 200 && rect.height >= 100;
   }
 
   _initMap() {
-    const container = this.shadowRoot?.getElementById("map");
-    if (!container || this._map) return;
+    if (this._map) return;
+    if (this._isInPreviewContext()) return;
+    if (!this._canInitMap()) return;
+    const container = this.shadowRoot.getElementById("map");
+    if (!container) return;
 
     const center = this._getConfiguredCenter();
     const initialCenter = center ? [center.lat, center.lon] : DEFAULT_CENTER;
     const zoom = center ? DEFAULT_HOME_ZOOM : DEFAULT_ZOOM;
 
-    this._map = L.map(container, {
-      crs: L.CRS.EPSG3857,
-      center: initialCenter,
-      zoom,
-      zoomControl: false,
-      attributionControl: true,
-      scrollWheelZoom: "center",
-      worldCopyJump: true,
-    });
+    try {
+      this._map = L.map(container, {
+        crs: L.CRS.EPSG3857,
+        center: initialCenter,
+        zoom,
+        zoomControl: false,
+        attributionControl: true,
+        scrollWheelZoom: "center",
+        worldCopyJump: true,
+      });
+    } catch (e) {
+      this._map = null;
+      console.warn("Rainradar: Leaflet map init failed", e);
+      return;
+    }
 
-    this._osmLayer = L.tileLayer(OSM_URL, {
-      attribution: OSM_ATTR,
-      maxZoom: 18,
-      referrerPolicy: "origin",
-    }).addTo(this._map);
+    try {
+      this._osmLayer = L.tileLayer(OSM_URL, {
+        attribution: OSM_ATTR,
+        maxZoom: 18,
+        referrerPolicy: "origin",
+      }).addTo(this._map);
+    } catch (e) {
+      console.warn("Rainradar: OSM layer init failed", e);
+    }
 
-    this._map.on("moveend", () => this._updateStationMarkers());
-    this._map.whenReady(() => {
-      this._updateCenterMarker();
-      this._updateStationMarkers();
-      this._buildFrames();
-      this._map.attributionControl.addAttribution("DWD");
-      setTimeout(() => this._map.invalidateSize(false), 200);
-    });
+    try {
+      this._map.on("moveend", () => this._updateStationMarkers());
+      this._map.whenReady(() => {
+        this._updateCenterMarker();
+        this._updateStationMarkers();
+        this._buildFrames();
+        if (this._map) {
+          this._map.attributionControl.addAttribution("DWD");
+          setTimeout(() => {
+            try {
+              this._map.invalidateSize(false);
+            } catch (e) {
+              // ignore
+            }
+          }, 200);
+        }
+      });
+    } catch (e) {
+      console.warn("Rainradar: map whenReady setup failed", e);
+    }
   }
 
   updated(changed) {

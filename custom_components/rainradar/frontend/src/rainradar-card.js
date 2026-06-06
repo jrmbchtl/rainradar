@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.3.8";
+const CARD_VERSION = "0.3.9";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -106,7 +106,6 @@ class RainradarCard extends LitElement {
     this._lastCenterKey = null;
     this._hassRef = null;
     this._debug = _isDebugFromUrl();
-    this._diagOpen = false;
     this._mapSize = null;
   }
 
@@ -115,7 +114,8 @@ class RainradarCard extends LitElement {
       display: block;
       position: relative;
       width: 100%;
-      height: var(--rainradar-card-height, 420px);
+      height: 100%;
+      min-height: 300px;
       overflow: hidden;
       box-sizing: border-box;
       font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
@@ -248,7 +248,7 @@ class RainradarCard extends LitElement {
   static getStubConfig() {
     return {
       center_entity: "zone.home",
-      height: 420,
+      marker_color: "#d32f2f",
     };
   }
 
@@ -266,7 +266,20 @@ class RainradarCard extends LitElement {
         `DWD color legend.`
       );
     }
-    const { mode: _ignoredMode, ...rest } = config || {};
+    // Deprecation warning: the `height` option was removed in 0.3.9
+    // because a hard pixel height interacts badly with the Lovelace
+    // grid layout (cards below get pushed around when this card
+    // resizes). Size the card via the layout (grid_rows / panel
+    // settings), not via per-card config.
+    if (config && config.height) {
+      _dwarn(
+        "setConfig",
+        `Card config "height=${config.height}" is deprecated and ignored ` +
+        `(removed in v0.3.9). Control the card size from the dashboard ` +
+        `layout instead.`
+      );
+    }
+    const { mode: _ignoredMode, height: _ignoredHeight, ...rest } = config || {};
     const merged = { ...RainradarCard.getStubConfig(), ...rest };
     const oldConfig = this.config;
     this.config = merged;
@@ -278,8 +291,9 @@ class RainradarCard extends LitElement {
         this._updateCenterMarker();
         this._recenter();
       }
-      if (oldConfig.height !== merged.height) {
-        this.style.setProperty("--rainradar-card-height", `${Number(merged.height || 420)}px`);
+      if (oldConfig.marker_color !== merged.marker_color) {
+        this._lastCenterKey = null;
+        this._updateCenterMarker();
       }
     }
   }
@@ -293,7 +307,7 @@ class RainradarCard extends LitElement {
   }
 
   getCardSize() {
-    return 4;
+    return 8;
   }
 
   _getEntityLatLon(entityId) {
@@ -506,16 +520,6 @@ class RainradarCard extends LitElement {
     this.requestUpdate();
   }
 
-  _dispatchConfigChange() {
-    this.dispatchEvent(
-      new CustomEvent("config-changed", {
-        detail: { config: this.config },
-        bubbles: true,
-        composed: true,
-      })
-    );
-  }
-
   _onSlider(e) {
     const idx = parseInt(e.target.value, 10);
     if (Number.isFinite(idx)) this._showFrame(idx);
@@ -546,16 +550,21 @@ class RainradarCard extends LitElement {
     }
     if (!center) return;
 
+    const markerColor = (this.config?.marker_color || "#d32f2f").trim();
+    // Basic CSS color sanitization: reject anything that's not a
+    // recognised hex/rgb/named color. We don't want a user-provided
+    // config string breaking out of the inline style attribute.
+    const safeColor = /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9.,\s]+\)|[a-zA-Z]{3,32})$/.test(markerColor)
+      ? markerColor
+      : "#d32f2f";
     const icon = L.divIcon({
-      html: `<div style="display:flex;flex-direction:column;align-items:center;gap:2px;"><div style="font-size:11px;line-height:1.2;background:rgba(255,255,255,0.98);padding:2px 7px;border-radius:999px;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.3);color:#222;font-weight:600;order:1;">${center.name}</div><ha-icon icon="mdi:map-marker" style="font-size:30px;line-height:30px;color:#d32f2f;filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));order:2;"></ha-icon></div>`,
+      html: `<ha-icon icon="mdi:map-marker" style="font-size:30px;line-height:30px;color:${safeColor};filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));display:block;"></ha-icon>`,
       className: "",
-      // Layout: text on top, pin below. The pin's teardrop tip sits
-      // near the bottom of the 30px icon (~3px of internal padding),
-      // so in a 64x50 div the tip is at roughly y=47 (label ~15px +
-      // gap 2px + pin offset 30px - tip padding 3px + baseline). The
-      // anchor lands the tip exactly on the marker's lat/lon.
-      iconSize: [64, 50],
-      iconAnchor: [32, 47],
+      // The mdi:map-marker teardrop tip sits at the bottom-center of a
+      // 30x30 div (a few px of internal padding). Anchor the tip on
+      // the marker's lat/lon.
+      iconSize: [30, 30],
+      iconAnchor: [15, 28],
     });
     this._centerMarker = L.marker([center.lat, center.lon], { icon }).addTo(this._map);
   }
@@ -602,10 +611,6 @@ class RainradarCard extends LitElement {
     if (this._isPreview) {
       return;
     }
-    this.style.setProperty(
-      "--rainradar-card-height",
-      `${Number(this.config?.height || 420)}px`
-    );
     this._preloaded = new Set();
     try {
       this._loadLeafletCSS();
@@ -775,32 +780,6 @@ class RainradarCard extends LitElement {
     }
     const maxIdx = Math.max(0, this._frames.length - 1);
     const sensorAttrs = this._getFramesAttributes() || {};
-    const sensorState = this.hass?.states?.["sensor.rainradar_radar_frames"]?.state
-      ?? Object.values(this.hass?.states || {}).find(s => (s?.entity_id || "").includes("rainradar") && (s?.entity_id || "").includes("radar_frames"))?.state
-      ?? "—";
-    const mapInfo = this._map
-      ? (() => {
-          const c = this._map.getCenter();
-          return {
-            center: `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`,
-            zoom: this._map.getZoom(),
-            size: this._map.getSize(),
-            bounds: this._map.getBounds().toBBoxString(),
-          };
-        })()
-      : null;
-    const diagText = [
-      `version: ${CARD_VERSION}`,
-      `frames: ${this._frames.length} / max ${maxIdx}`,
-      `center_entity: ${this.config?.center_entity || this.config?.default_location || "zone.home"}`,
-      `sensor state: ${sensorState}`,
-      `frame_error: ${sensorAttrs.frame_error || "none"}`,
-      `last_update: ${sensorAttrs.last_update || "—"}`,
-      mapInfo
-        ? `map center: ${mapInfo.center} zoom: ${mapInfo.zoom} size: ${mapInfo.size.x}x${mapInfo.size.y}`
-        : "map: not initialised",
-      `?debug=1 in URL enables verbose console logs`,
-    ].join("\n");
 
     return html`
       <div id="map"></div>
@@ -829,24 +808,9 @@ class RainradarCard extends LitElement {
           `
         : nothing}
 
-      ${this._diagOpen
-        ? html`
-            <pre
-              style="position:absolute;left:8px;bottom:80px;z-index:1200;background:rgba(0,0,0,0.78);color:#e0e0e0;padding:10px 12px;border-radius:8px;font-size:11px;line-height:1.4;max-width:380px;max-height:240px;overflow:auto;pointer-events:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;"
-              @click=${(e) => e.stopPropagation()}
-            >${diagText}</pre>
-          `
-        : nothing}
-
-      <div
-        style="position:absolute;bottom:2px;left:50%;transform:translateX(-50%);font-size:10px;color:rgba(255,255,255,0.9);background:rgba(20,20,20,0.92);padding:2px 8px;border-radius:6px;pointer-events:none;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;z-index:1099;letter-spacing:0.3px;box-shadow:0 1px 3px rgba(0,0,0,0.5);border:1px solid rgba(255,255,255,0.08);"
-      >
-        rainradar v${CARD_VERSION}
-      </div>
-
       <div class="controls">
         <div
-          style="position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:6px;pointer-events:auto;align-items:flex-end;"
+          style="position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:6px;pointer-events:auto;align-items:stretch;"
         >
           <button
             style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:8px 10px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;border:1px solid rgba(255,255,255,0.08);"
@@ -855,33 +819,21 @@ class RainradarCard extends LitElement {
           >
             <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
           </button>
-          <div
-            style="display:flex;flex-direction:row;gap:6px;"
+          <button
+            style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);font-size:16px;font-weight:700;color:#fff;line-height:1;border:1px solid rgba(255,255,255,0.08);min-width:34px;"
+            @click=${() => this._map?.zoomIn()}
+            title="Zoom in"
           >
-            <button
-              style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);font-size:16px;font-weight:700;color:#fff;line-height:1;border:1px solid rgba(255,255,255,0.08);min-width:34px;"
-              @click=${() => this._map?.zoomIn()}
-              title="Zoom in"
-            >
-              +
-            </button>
-            <button
-              style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);font-size:16px;font-weight:700;color:#fff;line-height:1;border:1px solid rgba(255,255,255,0.08);min-width:34px;"
-              @click=${() => this._map?.zoomOut()}
-              title="Zoom out"
-            >
-              −
-            </button>
-          </div>
+            +
+          </button>
+          <button
+            style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);font-size:16px;font-weight:700;color:#fff;line-height:1;border:1px solid rgba(255,255,255,0.08);min-width:34px;"
+            @click=${() => this._map?.zoomOut()}
+            title="Zoom out"
+          >
+            −
+          </button>
         </div>
-
-        <button
-          style="position:absolute;top:96px;left:8px;pointer-events:auto;background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 8px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:600;line-height:1;border:1px solid rgba(255,255,255,0.08);"
-          @click=${() => { this._diagOpen = !this._diagOpen; this.requestUpdate(); }}
-          title="Toggle diagnostic panel"
-        >
-          <ha-icon icon="mdi:information-outline" style="font-size:14px;margin-right:2px;"></ha-icon>i
-        </button>
 
         <div
           style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:rgba(20,20,20,0.92);padding:6px 14px;border-radius:24px;box-shadow:0 2px 8px rgba(0,0,0,0.5);font-size:13px;pointer-events:auto;border:1px solid rgba(255,255,255,0.08);"
@@ -967,18 +919,9 @@ class RainradarCardEditor extends LitElement {
             selector: { entity: { domain: ["zone", "device_tracker"] } },
           },
           {
-            name: "height",
-            label: "Widget height",
-            selector: {
-              select: {
-                options: [
-                  { value: 320, label: "320 px" },
-                  { value: 420, label: "420 px" },
-                  { value: 560, label: "560 px" },
-                  { value: 720, label: "720 px" },
-                ],
-              },
-            },
+            name: "marker_color",
+            label: "Marker color",
+            selector: { color: {} },
           },
         ]}
         .computeLabel=${(s) => s.label}

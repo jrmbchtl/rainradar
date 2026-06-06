@@ -1,6 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
+const CARD_VERSION = "0.3.0-rc1";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -14,6 +15,36 @@ const RADAR_BOUNDS = [
   [47.27, 5.7],
   [55.05, 15.0],
 ];
+
+// A slightly padded max-bounds rectangle so panning the map stops at the
+// edges of Germany instead of sliding into the Atlantic.
+const MAX_BOUNDS = [
+  [44.0, 3.0],
+  [58.0, 17.5],
+];
+
+const _isDebugFromUrl = () => {
+  try {
+    if (typeof window === "undefined") return false;
+    const qs = window.location?.search || "";
+    if (qs.includes("debug=1") || qs.includes("rainradar_debug=1")) return true;
+    if (window.localStorage?.getItem("rainradar_debug") === "1") return true;
+  } catch (e) {
+    // ignore (e.g. cross-origin or no location)
+  }
+  return false;
+};
+
+const _dlog = (tag, ...args) => {
+  // Console log with a consistent prefix and tag. Opt in via ?debug=1.
+  if (typeof window === "undefined" || !window.__RAINRADAR_DEBUG) return;
+  try {
+    // eslint-disable-next-line no-console
+    console.log(`%c[rainradar ${tag}]`, "color:#03a9f4;font-weight:600", ...args);
+  } catch (e) {
+    // ignore
+  }
+};
 
 class RainradarCard extends LitElement {
   static properties = {
@@ -48,6 +79,9 @@ class RainradarCard extends LitElement {
     this._lastFramesSignature = null;
     this._lastCenterKey = null;
     this._hassRef = null;
+    this._debug = _isDebugFromUrl();
+    this._diagOpen = false;
+    this._mapSize = null;
   }
 
   static styles = css`
@@ -101,6 +135,7 @@ class RainradarCard extends LitElement {
     const merged = { ...RainradarCard.getStubConfig(), ...config };
     const oldConfig = this.config;
     this.config = merged;
+    _dlog("setConfig", merged);
     if (oldConfig && this._map) {
       if (oldConfig.mode !== merged.mode) {
         this._buildFrames();
@@ -210,6 +245,7 @@ class RainradarCard extends LitElement {
     const data = this._getFramesData();
     if (!data) {
       this._timeLabel = "Waiting for radar data...";
+      _dlog("frames", "no sensor data yet");
       this._retryTimer = setTimeout(() => {
         if (this._map) this._buildFrames();
       }, DATA_RETRY_MS);
@@ -220,6 +256,8 @@ class RainradarCard extends LitElement {
     const past = data.past;
     const nowcast = data.nowcast;
     const forecast = data.forecast;
+    _dlog("frames", "sensor has", past.length, "past,", nowcast.length, "nowcast,", forecast.length, "forecast",
+      data.frameError ? `error="${data.frameError}"` : "");
 
     this._frames =
       this.config.mode === "15min"
@@ -242,17 +280,22 @@ class RainradarCard extends LitElement {
     this._lastFramesSignature = this._framesSignature(data);
 
     if (!this._map) {
+      _dlog("frames", "frames ready but no map yet");
       this.requestUpdate();
       return;
     }
 
     if (!this._overlay) {
+      _dlog("overlay", "create", { url: this._frames[0].url, bounds: RADAR_BOUNDS });
       this._overlay = L.imageOverlay(
         this._frames[0].url,
         RADAR_BOUNDS,
         { opacity: 0.7, interactive: false, crossOrigin: false }
       ).addTo(this._map);
+      this._overlay.on("load", () => _dlog("overlay", "image loaded", this._overlay?._url));
+      this._overlay.on("error", (ev) => _dlog("overlay", "image error", ev));
     } else {
+      _dlog("overlay", "setUrl", this._frames[0].url);
       this._overlay.setUrl(this._frames[0].url);
     }
 
@@ -364,7 +407,11 @@ class RainradarCard extends LitElement {
     const center = this._getConfiguredCenter();
     const lat = center?.lat ?? DEFAULT_CENTER[0];
     const lon = center?.lon ?? DEFAULT_CENTER[1];
-    this._map.flyTo([lat, lon], DEFAULT_HOME_ZOOM, { duration: 0.5 });
+    // Use setView (not flyTo) so the recenter is instantaneous and
+    // does not trigger the "home marker jumps while user is panning"
+    // perception from a 500ms tween.
+    _dlog("recenter", "->", lat, lon, "zoom", DEFAULT_HOME_ZOOM);
+    this._map.setView([lat, lon], DEFAULT_HOME_ZOOM, { animate: false });
   }
 
   _updateCenterMarker() {
@@ -426,6 +473,11 @@ class RainradarCard extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
+    this._debug = _isDebugFromUrl();
+    if (this._debug) {
+      window.__RAINRADAR_DEBUG = true;
+      _dlog("connect", "v" + CARD_VERSION, "preview=" + this._isInPreviewContext());
+    }
     // Synchronously detect the card-picker preview context. If we are inside
     // one, do absolutely nothing: no CSS load, no ResizeObserver, no
     // queueMicrotask, no Leaflet. The picker wraps the element in an
@@ -491,27 +543,40 @@ class RainradarCard extends LitElement {
     if (this._map) return;
     if (this._isPreview) return;
     const container = this.shadowRoot?.getElementById("map");
-    if (!container) return;
+    if (!container) {
+      _dlog("init", "no #map container, aborting");
+      return;
+    }
     const rect = container.getBoundingClientRect();
-    if (rect.width < 200 || rect.height < 100) return;
+    if (rect.width < 200 || rect.height < 100) {
+      _dlog("init", "container too small, waiting", { w: rect.width, h: rect.height });
+      return;
+    }
 
     const center = this._getConfiguredCenter();
     const initialCenter = center ? [center.lat, center.lon] : DEFAULT_CENTER;
     const zoom = center ? DEFAULT_HOME_ZOOM : DEFAULT_ZOOM;
+    _dlog("init", "creating map", { center: initialCenter, zoom, size: rect });
 
     try {
       this._map = L.map(container, {
         crs: L.CRS.EPSG3857,
         center: initialCenter,
         zoom,
+        minZoom: 5,
+        maxZoom: 12,
         zoomControl: false,
         attributionControl: true,
         scrollWheelZoom: "center",
-        worldCopyJump: true,
+        // worldCopyJump was removed: it caused the center marker to
+        // "jump" when zooming near the (irrelevant) world boundary and
+        // Germany is fully within a single world instance anyway.
+        maxBounds: MAX_BOUNDS,
+        maxBoundsViscosity: 0.8,
       });
     } catch (e) {
       this._map = null;
-      console.warn("Rainradar: Leaflet map init failed", e);
+      _dlog("init", "Leaflet map init failed", e);
       return;
     }
 
@@ -521,13 +586,22 @@ class RainradarCard extends LitElement {
         maxZoom: 18,
         referrerPolicy: "origin",
       }).addTo(this._map);
+      this._osmLayer.on("tileerror", (ev) => _dlog("osm", "tile error", ev?.tile?.src));
+      this._osmLayer.on("tileload", () => { /* noop, just to keep ref */ });
     } catch (e) {
-      console.warn("Rainradar: OSM layer init failed", e);
+      _dlog("init", "OSM layer init failed", e);
     }
 
     try {
-      this._map.on("moveend", () => this._updateStationMarkers());
+      this._map.on("moveend zoomend resize", () => {
+        if (!this._map) return;
+        const c = this._map.getCenter();
+        this._mapSize = this._map.getSize();
+        _dlog("map", `moveend/zoomend center=(${c.lat.toFixed(3)},${c.lng.toFixed(3)}) zoom=${this._map.getZoom()} size=${this._mapSize.x}x${this._mapSize.y}`);
+        this._updateStationMarkers();
+      });
       this._map.whenReady(() => {
+        _dlog("map", "whenReady");
         this._updateCenterMarker();
         this._updateStationMarkers();
         this._buildFrames();
@@ -536,6 +610,7 @@ class RainradarCard extends LitElement {
           setTimeout(() => {
             try {
               this._map.invalidateSize(false);
+              _dlog("map", "invalidateSize done", this._map.getSize());
             } catch (e) {
               // ignore
             }
@@ -543,7 +618,7 @@ class RainradarCard extends LitElement {
         }
       });
     } catch (e) {
-      console.warn("Rainradar: map whenReady setup failed", e);
+      _dlog("init", "map whenReady setup failed", e);
     }
   }
 
@@ -596,6 +671,34 @@ class RainradarCard extends LitElement {
       `;
     }
     const maxIdx = Math.max(0, this._frames.length - 1);
+    const sensorAttrs = this._getFramesAttributes() || {};
+    const sensorState = this.hass?.states?.["sensor.rainradar_radar_frames"]?.state
+      ?? Object.values(this.hass?.states || {}).find(s => (s?.entity_id || "").includes("rainradar") && (s?.entity_id || "").includes("radar_frames"))?.state
+      ?? "—";
+    const mapInfo = this._map
+      ? (() => {
+          const c = this._map.getCenter();
+          return {
+            center: `${c.lat.toFixed(3)}, ${c.lng.toFixed(3)}`,
+            zoom: this._map.getZoom(),
+            size: this._map.getSize(),
+            bounds: this._map.getBounds().toBBoxString(),
+          };
+        })()
+      : null;
+    const diagText = [
+      `version: ${CARD_VERSION}`,
+      `frames: ${this._frames.length} / max ${maxIdx}`,
+      `mode: ${this.config?.mode ?? "5min"}`,
+      `center_entity: ${this.config?.center_entity || this.config?.default_location || "zone.home"}`,
+      `sensor state: ${sensorState}`,
+      `frame_error: ${sensorAttrs.frame_error || "none"}`,
+      `last_update: ${sensorAttrs.last_update || "—"}`,
+      mapInfo
+        ? `map center: ${mapInfo.center} zoom: ${mapInfo.zoom} size: ${mapInfo.size.x}x${mapInfo.size.y}`
+        : "map: not initialised",
+      `?debug=1 in URL enables verbose console logs`,
+    ].join("\n");
 
     return html`
       <div id="map"></div>
@@ -603,10 +706,19 @@ class RainradarCard extends LitElement {
       ${this._showingNoData
         ? html`
             <div
-              style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:var(--ha-card-background,#fff);padding:16px 24px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);text-align:center;"
+              style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:var(--ha-card-background,#fff);padding:16px 24px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);text-align:center;max-width:80%;"
             >
               <div>${this._timeLabel || "Loading radar data..."}</div>
             </div>
+          `
+        : nothing}
+
+      ${this._diagOpen
+        ? html`
+            <pre
+              style="position:absolute;left:8px;bottom:80px;z-index:1200;background:rgba(0,0,0,0.78);color:#e0e0e0;padding:10px 12px;border-radius:8px;font-size:11px;line-height:1.4;max-width:380px;max-height:240px;overflow:auto;pointer-events:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;"
+              @click=${(e) => e.stopPropagation()}
+            >${diagText}</pre>
           `
         : nothing}
 
@@ -669,6 +781,14 @@ class RainradarCard extends LitElement {
           title="Recenter to home"
         >
           <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
+        </button>
+
+        <button
+          style="position:absolute;top:48px;left:8px;pointer-events:auto;background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:6px 8px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);display:flex;align-items:center;justify-content:center;color:var(--primary-text-color,#333);font-size:11px;font-weight:600;line-height:1;opacity:0.85;"
+          @click=${() => { this._diagOpen = !this._diagOpen; this.requestUpdate(); }}
+          title="Toggle diagnostic panel"
+        >
+          <ha-icon icon="mdi:information-outline" style="font-size:14px;margin-right:2px;"></ha-icon>i
         </button>
 
         <div

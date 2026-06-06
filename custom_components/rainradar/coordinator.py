@@ -164,24 +164,30 @@ class RainradarCoordinator(DataUpdateCoordinator):
         return result
 
     def _generate_radar_timestamps(self) -> dict[str, list[str]]:
+        # DWD WMS only serves frames on 5-minute boundaries for the radar
+        # composite and on hourly boundaries for the ICON-D2 forecast.
+        # Arbitrary seconds cause the WMS to return HTTP 200 with an
+        # InvalidDimensionValue XML body, which silently broke fetching.
         now = datetime.now(timezone.utc)
+        now_radar = now.replace(minute=(now.minute // 5) * 5, second=0, microsecond=0)
         radar: list[str] = []
         for i in range(PAST_FRAMES, 0, -1):
             radar.append(
-                (now - timedelta(minutes=FRAME_INTERVAL_MIN * i)).strftime(
+                (now_radar - timedelta(minutes=FRAME_INTERVAL_MIN * i)).strftime(
                     "%Y-%m-%dT%H:%M:%SZ"
                 )
             )
         for i in range(NOWCAST_FRAMES):
             radar.append(
-                (now + timedelta(minutes=FRAME_INTERVAL_MIN * i)).strftime(
+                (now_radar + timedelta(minutes=FRAME_INTERVAL_MIN * i)).strftime(
                     "%Y-%m-%dT%H:%M:%SZ"
                 )
             )
         forecast: list[str] = []
+        now_forecast = now.replace(minute=0, second=0, microsecond=0)
         for i in range(FORECAST_FRAMES):
             forecast.append(
-                (now + timedelta(hours=i)).strftime("%Y-%m-%dT%H:00:00Z")
+                (now_forecast + timedelta(hours=i)).strftime("%Y-%m-%dT%H:00:00Z")
             )
         return {"past": radar[:PAST_FRAMES], "nowcast": radar[PAST_FRAMES:], "forecast": forecast}
 
@@ -214,8 +220,12 @@ class RainradarCoordinator(DataUpdateCoordinator):
                         if resp.status != 200:
                             return (layer, timestamp, False, f"HTTP {resp.status}")
                         data = await resp.read()
-            if len(data) < 200:
-                return (layer, timestamp, False, "empty response body")
+            # DWD returns HTTP 200 with an XML ServiceExceptionReport for
+            # out-of-cadence timestamps. A real PNG starts with the 8-byte
+            # signature 89 50 4E 47 0D 0A 1A 0A. Reject anything else.
+            if len(data) < 8 or data[:8] != b"\x89PNG\r\n\x1a\n":
+                snippet = data[:200].decode("utf-8", errors="replace")
+                return (layer, timestamp, False, f"non-PNG response: {snippet[:120]}")
             await asyncio.to_thread(self._write_frame, path, data)
             return (layer, timestamp, True, None)
         except asyncio.TimeoutError:

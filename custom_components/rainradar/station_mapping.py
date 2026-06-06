@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import aiohttp
 import logging
 
-from .const import DWD_OPENDATA
+from .const import DWD_OPENDATA, RADAR_BBOX_LONLAT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,6 +18,15 @@ STATION_LIST_URLS = (
     f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/daily/"
     "kl/recent/KL_Tageswerte_Beschreibung_Stationen.txt",
 )
+
+# Geographic filter for DWD stations: keep only those within (or very close
+# to) the Germany bbox. The DWD CDC catalog includes overseas/African
+# stations for some products; without this filter those get matched as
+# "nearest" for German zones and skew the distance metric.
+_GERMANY_LAT_MIN = RADAR_BBOX_LONLAT[1] - 0.5
+_GERMANY_LAT_MAX = RADAR_BBOX_LONLAT[3] + 0.5
+_GERMANY_LON_MIN = RADAR_BBOX_LONLAT[0] - 0.5
+_GERMANY_LON_MAX = RADAR_BBOX_LONLAT[2] + 0.5
 
 
 class DWDStation:
@@ -70,6 +79,12 @@ def _parse_station_line(line: str) -> DWDStation | None:
             return None
         lat = float(parts[4].replace(",", "."))
         lon = float(parts[5].replace(",", "."))
+        # Drop non-German stations: the DWD CDC catalog includes a handful
+        # of overseas/African entries that would otherwise win nearest-match
+        # for German zones because of bad catalog rows.
+        if not (_GERMANY_LAT_MIN <= lat <= _GERMANY_LAT_MAX and
+                _GERMANY_LON_MIN <= lon <= _GERMANY_LON_MAX):
+            return None
         rest = parts[6].rsplit(maxsplit=2)
         name = rest[0].strip('" ') if rest else ""
         if not station_id or not name:
@@ -81,6 +96,7 @@ def _parse_station_line(line: str) -> DWDStation | None:
 
 async def fetch_stations(session: aiohttp.ClientSession) -> list[DWDStation]:
     by_id: dict[str, DWDStation] = {}
+    rejected_outside = 0
     for url in STATION_LIST_URLS:
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
@@ -93,12 +109,13 @@ async def fetch_stations(session: aiohttp.ClientSession) -> list[DWDStation]:
                 station = _parse_station_line(line)
                 if station is None:
                     continue
-                by_id.setdefault(station.station_id, station)
+                if by_id.get(station.station_id) is None:
+                    by_id[station.station_id] = station
         except Exception as exc:
             _LOGGER.warning("Failed to fetch stations from %s: %s", url, exc)
             continue
     stations = list(by_id.values())
-    _LOGGER.info("Loaded %d active DWD stations", len(stations))
+    _LOGGER.info("Loaded %d active DWD stations within Germany bbox", len(stations))
     return stations
 
 

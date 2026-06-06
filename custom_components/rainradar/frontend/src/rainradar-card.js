@@ -25,6 +25,7 @@ class RainradarCard extends LitElement {
     _showingNoData: { state: true },
     _speed: { state: true },
     _timeLabel: { state: true },
+    _isPreview: { state: true },
   };
 
   constructor() {
@@ -35,6 +36,7 @@ class RainradarCard extends LitElement {
     this._showingNoData = true;
     this._speed = 1;
     this._timeLabel = "";
+    this._isPreview = false;
     this._map = null;
     this._osmLayer = null;
     this._overlay = null;
@@ -407,7 +409,29 @@ class RainradarCard extends LitElement {
     document.head.appendChild(link);
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    // Synchronously detect the card-picker preview context. If we are inside
+    // one, do absolutely nothing: no CSS load, no ResizeObserver, no
+    // queueMicrotask, no Leaflet. The picker wraps the element in an
+    // `until()` directive that resolves only after `_renderCardElement`
+    // settles; any async work we schedule can keep the spinner spinning
+    // forever and trip the picker's `parentElement.shadowRoot is null`
+    // race when it tears the preview down.
+    this._isPreview = this._isInPreviewContext();
+    if (this._isPreview) {
+      return;
+    }
+    // Real dashboard: defer map init so the host layout settles first.
+    if (!this._map) {
+      queueMicrotask(() => this._initMap());
+    }
+  }
+
   firstUpdated() {
+    if (this._isPreview) {
+      return;
+    }
     this.style.setProperty(
       "--rainradar-card-height",
       `${Number(this.config?.height || 420)}px`
@@ -422,26 +446,13 @@ class RainradarCard extends LitElement {
       this._resizeObserver = new ResizeObserver(() => {
         if (this._map) {
           setTimeout(() => this._map.invalidateSize(false), 80);
-        } else {
+        } else if (!this._isPreview) {
           this._initMap();
         }
       });
       this._resizeObserver.observe(this);
     } catch (e) {
       // ResizeObserver not supported
-    }
-    // Defer map init: queueMicrotask lets the host (e.g. the card picker)
-    // finish its first render before we touch Leaflet, and the picker/ size
-    // checks inside _initMap skip the tiny preview pane entirely.
-    queueMicrotask(() => this._initMap());
-  }
-
-  connectedCallback() {
-    super.connectedCallback();
-    // If the card is moved (e.g. from the card-picker preview into the real
-    // dashboard), retry map init in the new context.
-    if (!this._map) {
-      queueMicrotask(() => this._initMap());
     }
   }
 
@@ -461,19 +472,13 @@ class RainradarCard extends LitElement {
     return false;
   }
 
-  _canInitMap() {
-    const container = this.shadowRoot?.getElementById("map");
-    if (!container) return false;
-    const rect = container.getBoundingClientRect();
-    return rect.width >= 200 && rect.height >= 100;
-  }
-
   _initMap() {
     if (this._map) return;
-    if (this._isInPreviewContext()) return;
-    if (!this._canInitMap()) return;
-    const container = this.shadowRoot.getElementById("map");
+    if (this._isPreview) return;
+    const container = this.shadowRoot?.getElementById("map");
     if (!container) return;
+    const rect = container.getBoundingClientRect();
+    if (rect.width < 200 || rect.height < 100) return;
 
     const center = this._getConfiguredCenter();
     const initialCenter = center ? [center.lat, center.lon] : DEFAULT_CENTER;
@@ -528,6 +533,7 @@ class RainradarCard extends LitElement {
   }
 
   updated(changed) {
+    if (this._isPreview) return;
     if (changed.has("hass") && this.hass && this.hass !== this._hassRef) {
       this._hassRef = this.hass;
       const data = this._getFramesData();
@@ -559,9 +565,21 @@ class RainradarCard extends LitElement {
       } catch (e) {}
       this._resizeObserver = null;
     }
+    // Reset preview flag so a subsequent connect to a real dashboard goes
+    // through the normal init path.
+    this._isPreview = false;
   }
 
   render() {
+    if (this._isPreview) {
+      return html`
+        <div
+          style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:300px;color:var(--secondary-text-color,#666);font-size:14px;font-family:var(--paper-font-body1_-_font-family);"
+        >
+          Rainradar
+        </div>
+      `;
+    }
     const maxIdx = Math.max(0, this._frames.length - 1);
 
     return html`

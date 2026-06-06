@@ -5,7 +5,6 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_LATITUDE, CONF_LONGITUDE
 from homeassistant.core import callback
 from homeassistant.helpers import selector
 
@@ -16,30 +15,9 @@ from .const import (
     CONF_DEVICE_TRACKER,
     CONF_DEVICE_TRACKERS,
     CONF_ZONES,
-    CONF_NAME,
     DEFAULT_SCAN_INTERVAL,
     normalize_entity_list,
 )
-
-
-def _zones_to_locations(hass, zone_entities: list[str]) -> list[dict[str, Any]]:
-    locations: list[dict[str, Any]] = []
-    for zone_entity_id in zone_entities:
-        zone_state = hass.states.get(zone_entity_id)
-        if zone_state is None:
-            continue
-        lat = zone_state.attributes.get(CONF_LATITUDE)
-        lon = zone_state.attributes.get(CONF_LONGITUDE)
-        if lat is None or lon is None:
-            continue
-        locations.append(
-            {
-                CONF_NAME: zone_state.attributes.get("friendly_name", zone_entity_id),
-                CONF_LATITUDE: float(lat),
-                CONF_LONGITUDE: float(lon),
-            }
-        )
-    return locations
 
 
 class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):

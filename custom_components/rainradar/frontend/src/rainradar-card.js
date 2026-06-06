@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.3.9";
+const CARD_VERSION = "0.4.0";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -80,7 +80,6 @@ class RainradarCard extends LitElement {
     _currentIndex: { state: true },
     _playing: { state: true },
     _showingNoData: { state: true },
-    _speed: { state: true },
     _timeLabel: { state: true },
     _isPreview: { state: true },
   };
@@ -91,13 +90,13 @@ class RainradarCard extends LitElement {
     this._currentIndex = 0;
     this._playing = false;
     this._showingNoData = true;
-    this._speed = 1;
     this._timeLabel = "";
     this._isPreview = false;
     this._map = null;
     this._osmLayer = null;
     this._overlay = null;
     this._centerMarker = null;
+    this._secondaryMarkers = [];
     this._stationMarkers = [];
     this._timer = null;
     this._retryTimer = null;
@@ -249,6 +248,7 @@ class RainradarCard extends LitElement {
     return {
       center_entity: "zone.home",
       marker_color: "#d32f2f",
+      secondary_markers: [],
     };
   }
 
@@ -294,6 +294,9 @@ class RainradarCard extends LitElement {
       if (oldConfig.marker_color !== merged.marker_color) {
         this._lastCenterKey = null;
         this._updateCenterMarker();
+      }
+      if (oldConfig.secondary_markers !== merged.secondary_markers) {
+        this._updateSecondaryMarkers();
       }
     }
   }
@@ -494,7 +497,7 @@ class RainradarCard extends LitElement {
     if (!this._playing || !this._frames.length) return;
     const next = (this._currentIndex + 1) % this._frames.length;
     this._showFrame(next);
-    this._timer = setTimeout(() => this._tick(), FRAME_MS / this._speed);
+    this._timer = setTimeout(() => this._tick(), FRAME_MS);
   }
 
   _clearTimer() {
@@ -509,15 +512,6 @@ class RainradarCard extends LitElement {
       clearTimeout(this._retryTimer);
       this._retryTimer = null;
     }
-  }
-
-  _setSpeed(speed) {
-    this._speed = speed;
-    if (this._playing) {
-      this._clearTimer();
-      this._tick();
-    }
-    this.requestUpdate();
   }
 
   _onSlider(e) {
@@ -537,10 +531,37 @@ class RainradarCard extends LitElement {
     this._map.setView([lat, lon], DEFAULT_HOME_ZOOM, { animate: false });
   }
 
+  _sanitizeColor(value, fallback) {
+    if (typeof value !== "string") return fallback;
+    const trimmed = value.trim();
+    // Basic CSS color sanitization: accept hex, rgb()/rgba(), or a
+    // short named-color token. Reject anything that could break out of
+    // the inline style attribute.
+    if (/^(#[0-9a-fA-F]{3,8}|rgba?\([0-9.,\s]+\)|[a-zA-Z]{3,32})$/.test(trimmed)) {
+      return trimmed;
+    }
+    return fallback;
+  }
+
+  _makeMarkerIcon(color) {
+    return L.divIcon({
+      html: `<ha-icon icon="mdi:map-marker" style="font-size:30px;line-height:30px;color:${color};filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));display:block;"></ha-icon>`,
+      className: "",
+      // The mdi:map-marker teardrop tip sits at the bottom-center of a
+      // 30x30 div (a few px of internal padding). Anchor the tip on
+      // the marker's lat/lon.
+      iconSize: [30, 30],
+      iconAnchor: [15, 28],
+    });
+  }
+
   _updateCenterMarker() {
     if (!this._map) return;
     const center = this._getConfiguredCenter();
-    const key = center ? `${center.id}|${center.lat}|${center.lon}` : "none";
+    const color = this._sanitizeColor(this.config?.marker_color, "#d32f2f");
+    const key = center
+      ? `${center.id}|${center.lat}|${center.lon}|${color}`
+      : `none|${color}`;
     if (key === this._lastCenterKey) return;
     this._lastCenterKey = key;
 
@@ -550,23 +571,30 @@ class RainradarCard extends LitElement {
     }
     if (!center) return;
 
-    const markerColor = (this.config?.marker_color || "#d32f2f").trim();
-    // Basic CSS color sanitization: reject anything that's not a
-    // recognised hex/rgb/named color. We don't want a user-provided
-    // config string breaking out of the inline style attribute.
-    const safeColor = /^(#[0-9a-fA-F]{3,8}|rgba?\([0-9.,\s]+\)|[a-zA-Z]{3,32})$/.test(markerColor)
-      ? markerColor
-      : "#d32f2f";
-    const icon = L.divIcon({
-      html: `<ha-icon icon="mdi:map-marker" style="font-size:30px;line-height:30px;color:${safeColor};filter:drop-shadow(0 1px 2px rgba(0,0,0,0.4));display:block;"></ha-icon>`,
-      className: "",
-      // The mdi:map-marker teardrop tip sits at the bottom-center of a
-      // 30x30 div (a few px of internal padding). Anchor the tip on
-      // the marker's lat/lon.
-      iconSize: [30, 30],
-      iconAnchor: [15, 28],
-    });
-    this._centerMarker = L.marker([center.lat, center.lon], { icon }).addTo(this._map);
+    this._centerMarker = L.marker([center.lat, center.lon], {
+      icon: this._makeMarkerIcon(color),
+    }).addTo(this._map);
+  }
+
+  _updateSecondaryMarkers() {
+    if (!this._map) return;
+    this._secondaryMarkers.forEach((m) => this._map.removeLayer(m));
+    this._secondaryMarkers = [];
+    const list = Array.isArray(this.config?.secondary_markers)
+      ? this.config.secondary_markers
+      : [];
+    for (const entry of list) {
+      if (!entry || typeof entry !== "object") continue;
+      const entityId = entry.entity;
+      if (!entityId || typeof entityId !== "string") continue;
+      const pos = this._getEntityLatLon(entityId);
+      if (!pos) continue;
+      const color = this._sanitizeColor(entry.color, "#03a9f4");
+      const marker = L.marker([pos.lat, pos.lon], {
+        icon: this._makeMarkerIcon(color),
+      }).addTo(this._map);
+      this._secondaryMarkers.push(marker);
+    }
   }
 
   _updateStationMarkers() {
@@ -711,6 +739,7 @@ class RainradarCard extends LitElement {
       this._map.whenReady(() => {
         _dlog("map", "whenReady");
         this._updateCenterMarker();
+        this._updateSecondaryMarkers();
         this._updateStationMarkers();
         this._buildFrames();
         if (this._map) {
@@ -741,6 +770,7 @@ class RainradarCard extends LitElement {
         this._buildFrames();
       } else {
         this._updateCenterMarker();
+        this._updateSecondaryMarkers();
         this._updateStationMarkers();
       }
     }
@@ -756,6 +786,7 @@ class RainradarCard extends LitElement {
     }
     this._overlay = null;
     this._centerMarker = null;
+    this._secondaryMarkers = [];
     this._stationMarkers = [];
     if (this._resizeObserver) {
       try {
@@ -810,24 +841,24 @@ class RainradarCard extends LitElement {
 
       <div class="controls">
         <div
-          style="position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:6px;pointer-events:auto;align-items:stretch;"
+          style="position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:0;pointer-events:auto;align-items:stretch;background:rgba(20,20,20,0.92);border-radius:10px;box-shadow:0 2px 6px rgba(0,0,0,0.5);overflow:hidden;border:1px solid rgba(255,255,255,0.08);min-width:38px;"
         >
           <button
-            style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:8px 10px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;border:1px solid rgba(255,255,255,0.08);"
+            style="background:transparent;border:none;cursor:pointer;padding:8px 10px;color:#fff;font-size:18px;display:flex;align-items:center;justify-content:center;line-height:1;"
             @click=${this._recenter}
             title="Recenter to home"
           >
             <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
           </button>
           <button
-            style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);font-size:16px;font-weight:700;color:#fff;line-height:1;border:1px solid rgba(255,255,255,0.08);min-width:34px;"
+            style="background:transparent;border:none;cursor:pointer;padding:7px 12px;color:#fff;font-size:16px;font-weight:700;line-height:1;border-top:1px solid rgba(255,255,255,0.08);"
             @click=${() => this._map?.zoomIn()}
             title="Zoom in"
           >
             +
           </button>
           <button
-            style="background:rgba(20,20,20,0.92);border:none;border-radius:8px;padding:6px 12px;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.5);font-size:16px;font-weight:700;color:#fff;line-height:1;border:1px solid rgba(255,255,255,0.08);min-width:34px;"
+            style="background:transparent;border:none;cursor:pointer;padding:7px 12px;color:#fff;font-size:16px;font-weight:700;line-height:1;border-top:1px solid rgba(255,255,255,0.08);"
             @click=${() => this._map?.zoomOut()}
             title="Zoom out"
           >
@@ -859,22 +890,6 @@ class RainradarCard extends LitElement {
             style="font-size:12px;font-weight:600;color:#fff;min-width:72px;text-align:center;font-variant-numeric:tabular-nums;"
             >${this._timeLabel}</span
           >
-
-          ${[0.5, 1, 2].map(
-            (s) => html`
-              <button
-                style="background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:4px;font-size:11px;font-weight:${this
-                  ._speed === s
-                  ? "700"
-                  : "400"};color:${this._speed === s
-                  ? "var(--primary-color,#03a9f4)"
-                  : "rgba(255,255,255,0.75)"}"
-                @click=${() => this._setSpeed(s)}
-              >
-                ${s === 1 ? "1×" : s === 0.5 ? "½×" : "2×"}
-              </button>
-            `
-          )}
         </div>
       </div>
     `;
@@ -889,13 +904,118 @@ class RainradarCardEditor extends LitElement {
   static properties = {
     hass: { type: Object },
     config: { type: Object },
+    _newEntity: { state: true },
   };
+
+  constructor() {
+    super();
+    this._newEntity = "";
+  }
+
+  static styles = css`
+    :host {
+      display: block;
+      font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
+    }
+    .section {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid var(--divider-color, #e0e0e0);
+    }
+    .section-title {
+      font-size: 13px;
+      font-weight: 600;
+      margin: 0 0 4px 0;
+    }
+    .section-hint {
+      font-size: 11px;
+      opacity: 0.7;
+      margin: 0 0 10px 0;
+      line-height: 1.4;
+    }
+    .add-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .add-row ha-entity-picker {
+      flex: 1 1 auto;
+    }
+    .add-btn {
+      flex: 0 0 auto;
+      background: var(--primary-color, #03a9f4);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 8px 14px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .add-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .marker-list {
+      list-style: none;
+      padding: 0;
+      margin: 10px 0 0 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .marker-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      background: rgba(0, 0, 0, 0.04);
+      border-radius: 4px;
+    }
+    .marker-name {
+      flex: 1 1 auto;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .marker-color {
+      flex: 0 0 auto;
+      width: 36px;
+      height: 28px;
+      padding: 0;
+      border: 1px solid var(--divider-color, #ccc);
+      border-radius: 4px;
+      background: transparent;
+      cursor: pointer;
+    }
+    .remove-btn {
+      flex: 0 0 auto;
+      background: transparent;
+      color: var(--error-color, #d32f2f);
+      border: 1px solid var(--error-color, #d32f2f);
+      border-radius: 4px;
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .empty {
+      font-size: 12px;
+      opacity: 0.6;
+      font-style: italic;
+      padding: 4px 0;
+    }
+  `;
 
   setConfig(config) {
     this.config = { ...RainradarCard.getStubConfig(), ...config };
+    if (!Array.isArray(this.config.secondary_markers)) {
+      this.config = { ...this.config, secondary_markers: [] };
+    }
   }
 
-  _handleChange() {
+  _emit() {
     this.dispatchEvent(
       new CustomEvent("config-changed", {
         detail: { config: this.config },
@@ -905,13 +1025,53 @@ class RainradarCardEditor extends LitElement {
     );
   }
 
+  _handleSimpleChange(e) {
+    this.config = { ...this.config, ...e.detail.value };
+    this._emit();
+  }
+
+  _addSelectedMarker() {
+    if (!this._newEntity) return;
+    const next = [
+      ...(this.config.secondary_markers || []),
+      { entity: this._newEntity, color: "#03a9f4" },
+    ];
+    this.config = { ...this.config, secondary_markers: next };
+    this._newEntity = "";
+    this._emit();
+  }
+
+  _removeMarker(idx) {
+    const next = [...(this.config.secondary_markers || [])];
+    next.splice(idx, 1);
+    this.config = { ...this.config, secondary_markers: next };
+    this._emit();
+  }
+
+  _updateMarkerColor(idx, color) {
+    const next = [...(this.config.secondary_markers || [])];
+    next[idx] = { ...next[idx], color };
+    this.config = { ...this.config, secondary_markers: next };
+    this._emit();
+  }
+
+  _friendlyName(entityId) {
+    if (!entityId) return entityId;
+    const state = this.hass?.states?.[entityId];
+    return state?.attributes?.friendly_name || state?.name || entityId;
+  }
+
   render() {
     if (!this.hass || !this.config) return nothing;
+    const secondaryMarkers = this.config.secondary_markers || [];
 
     return html`
       <ha-form
         .hass=${this.hass}
-        .data=${this.config}
+        .data=${{
+          center_entity: this.config.center_entity || "",
+          marker_color: this.config.marker_color || "#d32f2f",
+        }}
         .schema=${[
           {
             name: "center_entity",
@@ -920,16 +1080,70 @@ class RainradarCardEditor extends LitElement {
           },
           {
             name: "marker_color",
-            label: "Marker color",
+            label: "Center marker color",
             selector: { color: {} },
           },
         ]}
         .computeLabel=${(s) => s.label}
-        @value-changed=${(e) => {
-          this.config = { ...this.config, ...e.detail.value };
-          this._handleChange();
-        }}
+        @value-changed=${this._handleSimpleChange}
       ></ha-form>
+
+      <div class="section">
+        <p class="section-title">Secondary markers</p>
+        <p class="section-hint">
+          Add additional entities (zones or device trackers) that should
+          appear as markers on the map without changing the map's centre.
+          Each marker can have its own color.
+        </p>
+        <div class="add-row">
+          <ha-entity-picker
+            .hass=${this.hass}
+            .value=${this._newEntity}
+            .includeDomains=${["zone", "device_tracker"]}
+            @value-changed=${(e) => {
+              this._newEntity = e.detail.value || "";
+            }}
+          ></ha-entity-picker>
+          <button
+            class="add-btn"
+            ?disabled=${!this._newEntity}
+            @click=${this._addSelectedMarker}
+          >
+            + Add
+          </button>
+        </div>
+
+        ${secondaryMarkers.length === 0
+          ? html`<p class="empty">No secondary markers yet.</p>`
+          : html`
+              <ul class="marker-list">
+                ${secondaryMarkers.map(
+                  (m, idx) => html`
+                    <li class="marker-row">
+                      <span class="marker-name" title=${m.entity}
+                        >${this._friendlyName(m.entity)}</span
+                      >
+                      <input
+                        class="marker-color"
+                        type="color"
+                        .value=${m.color || "#03a9f4"}
+                        @input=${(e) =>
+                          this._updateMarkerColor(idx, e.target.value)}
+                        title="Marker color"
+                      />
+                      <button
+                        class="remove-btn"
+                        @click=${() => this._removeMarker(idx)}
+                        title="Remove marker"
+                      >
+                        Remove
+                      </button>
+                    </li>
+                  `
+                )}
+              </ul>
+            `}
+      </div>
     `;
   }
 }

@@ -61,7 +61,10 @@ After adding the integration, add the Rainradar card to any dashboard:
 | Field | Description |
 |-------|-------------|
 | **Center map on entity** | A `zone.*` or `device_tracker.*` entity to recentre the map on |
-| **Widget height** | 320 / 420 / 560 / 720 px |
+| **Center marker color** | Hex / rgb color for the centre marker (default `#d32f2f`) |
+| **Secondary markers** | List of additional `zone.*` / `device_tracker.*` entities to render as markers on the map (without recentring). Each has its own color. The map's size is set via the dashboard layout, not this card's config. |
+
+The card's size is set via the dashboard layout (Sections grid or Panel) — there is no per-card height option any more, because a hard pixel height interacts badly with cards below in the grid.
 
 ### Card controls
 
@@ -69,10 +72,10 @@ After adding the integration, add the Rainradar card to any dashboard:
 |---------|-------------|
 | **Play / Pause** | Start/stop radar animation |
 | **Timeline slider** | Scrub through individual frames |
-| **Speed buttons** | ½×, 1×, 2× playback speed |
 | **Zoom +/−** | Zoom controls (also available via scroll wheel on the map) |
 | **Re-centre** | Jump back to the configured centre entity |
-| **Diagnostic panel** | `i` button (top-left) shows the loaded card version, frame count, sensor state, frame error, last update, map size and centre |
+
+The three map controls (recentre, zoom in, zoom out) share a single control surface in the top-right corner with internal hairline dividers.
 
 ## Sensors
 

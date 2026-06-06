@@ -32,15 +32,12 @@ from .const import (
     DWD_WMS_BASE,
     DWD_WMS_RADAR_LAYER,
     DWD_WMS_RADAR_STYLE,
-    DWD_WMS_FORECAST_LAYER,
-    DWD_WMS_FORECAST_STYLE,
     DWD_WMS_VERSION,
     RADAR_BBOX_MERCATOR,
     RADAR_IMG_WIDTH,
     RADAR_IMG_HEIGHT,
     PAST_FRAMES,
     NOWCAST_FRAMES,
-    FORECAST_FRAMES,
     FRAME_INTERVAL_MIN,
     frames_cache_dir,
     frames_url_prefix,
@@ -180,10 +177,16 @@ class RainradarCoordinator(DataUpdateCoordinator):
         return result
 
     def _generate_radar_timestamps(self) -> dict[str, list[str]]:
-        # DWD WMS only serves frames on 5-minute boundaries for the radar
-        # composite and on hourly boundaries for the ICON-D2 forecast.
-        # Arbitrary seconds cause the WMS to return HTTP 200 with an
+        # DWD WMS only serves frames on 5-minute boundaries. Arbitrary
+        # seconds cause the WMS to return HTTP 200 with an
         # InvalidDimensionValue XML body, which silently broke fetching.
+        # The ICON-D2 forecast layer (hourly, 14h) was removed in
+        # 0.3.8: its 1-hour cadence couldn't replace the 5-min nowcast
+        # without losing resolution, and starting it at top-of-current-
+        # hour made the timeline "jump back" from ~now+2h to ~now+0h.
+        # User feedback was that data past ~2h ahead is not precise
+        # enough to be useful anyway, so the card now shows past+nowcast
+        # only (48 frames, 2h past + 2h nowcast).
         now = datetime.now(timezone.utc)
         now_radar = now.replace(minute=(now.minute // 5) * 5, second=0, microsecond=0)
         radar: list[str] = []
@@ -199,23 +202,7 @@ class RainradarCoordinator(DataUpdateCoordinator):
                     "%Y-%m-%dT%H:%M:%SZ"
                 )
             )
-        # The nowcast already covers the first ~2 h at 5-min resolution.
-        # The ICON-D2 forecast is hourly, so it can't replace the nowcast
-        # without losing resolution; starting it at the top of the current
-        # hour (the previous behaviour) made the timeline "jump back" from
-        # ~now+2h to ~now+0h and confused the UI. Round `now+2h` up to
-        # the top of the next hour so the forecast always starts at or
-        # after the last nowcast frame and the timeline stays continuous.
-        forecast: list[str] = []
-        forecast_anchor = now + timedelta(hours=2)
-        forecast_start = forecast_anchor.replace(minute=0, second=0, microsecond=0)
-        if forecast_anchor > forecast_start:
-            forecast_start += timedelta(hours=1)
-        for i in range(FORECAST_FRAMES):
-            forecast.append(
-                (forecast_start + timedelta(hours=i)).strftime("%Y-%m-%dT%H:00:00Z")
-            )
-        return {"past": radar[:PAST_FRAMES], "nowcast": radar[PAST_FRAMES:], "forecast": forecast}
+        return {"past": radar[:PAST_FRAMES], "nowcast": radar[PAST_FRAMES:]}
 
     def _wms_url(self, layer: str, style: str, timestamp: str) -> str:
         ts = quote(timestamp, safe="")
@@ -319,12 +306,6 @@ class RainradarCoordinator(DataUpdateCoordinator):
             tasks.append(
                 self._download_frame(DWD_WMS_RADAR_LAYER, DWD_WMS_RADAR_STYLE, ts, sem)
             )
-        for ts in frames.get("forecast", []):
-            tasks.append(
-                self._download_frame(
-                    DWD_WMS_FORECAST_LAYER, DWD_WMS_FORECAST_STYLE, ts, sem
-                )
-            )
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         failure_counts: dict[str, int] = {}
@@ -351,19 +332,9 @@ class RainradarCoordinator(DataUpdateCoordinator):
                         {"ts": ts, "url": self._frame_url(DWD_WMS_RADAR_LAYER, ts)}
                     )
             result[kind] = entries
-        forecast_entries = []
-        for ts in frames.get("forecast", []):
-            path = self._frame_path(DWD_WMS_FORECAST_LAYER, ts)
-            if path.is_file():
-                forecast_entries.append(
-                    {"ts": ts, "url": self._frame_url(DWD_WMS_FORECAST_LAYER, ts)}
-                )
-        result["forecast"] = forecast_entries
 
-        total_requested = sum(len(frames.get(k, [])) for k in ("past", "nowcast", "forecast"))
-        total_ok = sum(
-            len(result.get(k, [])) for k in ("past", "nowcast", "forecast")
-        )
+        total_requested = sum(len(frames.get(k, [])) for k in ("past", "nowcast"))
+        total_ok = sum(len(result.get(k, [])) for k in ("past", "nowcast"))
         if total_requested > 0 and total_ok == 0:
             self._last_frame_error = first_error or "all frame fetches failed"
             _LOGGER.warning(

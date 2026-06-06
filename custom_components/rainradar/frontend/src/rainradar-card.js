@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.3.7";
+const CARD_VERSION = "0.3.8";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -247,7 +247,6 @@ class RainradarCard extends LitElement {
 
   static getStubConfig() {
     return {
-      mode: "5min",
       center_entity: "zone.home",
       height: 420,
     };
@@ -255,14 +254,24 @@ class RainradarCard extends LitElement {
 
   setConfig(config) {
     if (!config) config = {};
-    const merged = { ...RainradarCard.getStubConfig(), ...config };
+    // Deprecation warning: the `mode` option (5min/15min) was removed
+    // in 0.3.8. ICON-D2 hourly forecast is no longer fetched; the card
+    // shows past + 2h nowcast at 5-min resolution. Old configs with
+    // `mode: "15min"` would otherwise silently behave like 5min.
+    if (config && config.mode) {
+      _dwarn(
+        "setConfig",
+        `Card config "mode=${config.mode}" is deprecated and ignored ` +
+        `(removed in v0.3.8). Use the "rainradar-legend-card" for the ` +
+        `DWD color legend.`
+      );
+    }
+    const { mode: _ignoredMode, ...rest } = config || {};
+    const merged = { ...RainradarCard.getStubConfig(), ...rest };
     const oldConfig = this.config;
     this.config = merged;
     _dlog("setConfig", merged);
     if (oldConfig && this._map) {
-      if (oldConfig.mode !== merged.mode) {
-        this._buildFrames();
-      }
       if (oldConfig.center_entity !== merged.center_entity ||
           oldConfig.default_location !== merged.default_location) {
         this._lastCenterKey = null;
@@ -316,11 +325,9 @@ class RainradarCard extends LitElement {
     const frames = attrs.frames || attrs;
     const past = Array.isArray(frames.past) ? frames.past : [];
     const nowcast = Array.isArray(frames.nowcast) ? frames.nowcast : [];
-    const forecast = Array.isArray(frames.forecast) ? frames.forecast : [];
     return {
       past,
       nowcast,
-      forecast,
       lastUpdate: attrs.last_update || null,
       frameError: attrs.frame_error || null,
     };
@@ -355,7 +362,7 @@ class RainradarCard extends LitElement {
   }
 
   _framesSignature(frames) {
-    return `${frames.lastUpdate || ""}|${frames.past.length}|${frames.nowcast.length}|${frames.forecast.length}`;
+    return `${frames.lastUpdate || ""}|${frames.past.length}|${frames.nowcast.length}`;
   }
 
   _buildFrames() {
@@ -378,14 +385,10 @@ class RainradarCard extends LitElement {
 
     const past = data.past;
     const nowcast = data.nowcast;
-    const forecast = data.forecast;
-    _dlog("frames", "sensor has", past.length, "past,", nowcast.length, "nowcast,", forecast.length, "forecast",
+    _dlog("frames", "sensor has", past.length, "past,", nowcast.length, "nowcast",
       data.frameError ? `error="${data.frameError}"` : "");
 
-    this._frames =
-      this.config.mode === "15min"
-        ? [...past, ...nowcast, ...forecast]
-        : [...past, ...nowcast];
+    this._frames = [...past, ...nowcast];
 
     if (!this._frames.length) {
       this._timeLabel = data.frameError
@@ -501,13 +504,6 @@ class RainradarCard extends LitElement {
       this._tick();
     }
     this.requestUpdate();
-  }
-
-  _setMode(mode) {
-    if (this.config.mode === mode) return;
-    this.config = { ...this.config, mode };
-    this._buildFrames();
-    this._dispatchConfigChange();
   }
 
   _dispatchConfigChange() {
@@ -796,7 +792,6 @@ class RainradarCard extends LitElement {
     const diagText = [
       `version: ${CARD_VERSION}`,
       `frames: ${this._frames.length} / max ${maxIdx}`,
-      `mode: ${this.config?.mode ?? "5min"}`,
       `center_entity: ${this.config?.center_entity || this.config?.default_location || "zone.home"}`,
       `sensor state: ${sensorState}`,
       `frame_error: ${sensorAttrs.frame_error || "none"}`,
@@ -850,33 +845,6 @@ class RainradarCard extends LitElement {
       </div>
 
       <div class="controls">
-        <div
-          style="position:absolute;top:8px;left:8px;display:flex;gap:0;background:rgba(20,20,20,0.92);border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.5);overflow:hidden;pointer-events:auto;font-size:12px;border:1px solid rgba(255,255,255,0.08);"
-        >
-          <button
-            style="padding:6px 12px;border:none;cursor:pointer;background:${this
-              .config.mode === "5min"
-              ? "var(--primary-color,#03a9f4)"
-              : "transparent"};color:#fff;font-weight:${this.config.mode === "5min"
-              ? "600"
-              : "400"}"
-            @click=${() => this._setMode("5min")}
-          >
-            5-min
-          </button>
-          <button
-            style="padding:6px 12px;border:none;cursor:pointer;background:${this
-              .config.mode === "15min"
-              ? "var(--primary-color,#03a9f4)"
-              : "transparent"};color:#fff;font-weight:${this.config.mode === "15min"
-              ? "600"
-              : "400"}"
-            @click=${() => this._setMode("15min")}
-          >
-            15-min
-          </button>
-        </div>
-
         <div
           style="position:absolute;top:8px;right:8px;display:flex;flex-direction:column;gap:6px;pointer-events:auto;align-items:flex-end;"
         >
@@ -957,24 +925,6 @@ class RainradarCard extends LitElement {
           )}
         </div>
       </div>
-
-      <div
-        style="position:absolute;bottom:76px;right:8px;z-index:1100;background:rgba(20,20,20,0.92);padding:6px 10px;border-radius:8px;font-size:11px;box-shadow:0 2px 6px rgba(0,0,0,0.5);line-height:1.6;pointer-events:auto;color:#fff;border:1px solid rgba(255,255,255,0.08);min-width:138px;"
-      >
-        <div style="font-weight:700;margin-bottom:4px;font-size:11px;">DWD precipitation <span style="opacity:0.7;font-weight:400;">(mm/h)</span></div>
-        <div style="display:flex;align-items:center;gap:6px;">
-          <span style="width:14px;height:14px;border-radius:3px;background:#00e8e8;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> light <span style="opacity:0.6;margin-left:auto;font-size:10px;">0.1&ndash;1</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;">
-          <span style="width:14px;height:14px;border-radius:3px;background:#f0e800;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> moderate <span style="opacity:0.6;margin-left:auto;font-size:10px;">3&ndash;5</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;">
-          <span style="width:14px;height:14px;border-radius:3px;background:#ff8000;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> heavy <span style="opacity:0.6;margin-left:auto;font-size:10px;">7&ndash;10</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:6px;">
-          <span style="width:14px;height:14px;border-radius:3px;background:#d000d0;display:inline-block;border:1px solid rgba(0,0,0,0.15);"></span> extreme <span style="opacity:0.6;margin-left:auto;font-size:10px;">75+</span>
-        </div>
-      </div>
     `;
   }
 }
@@ -1012,18 +962,6 @@ class RainradarCardEditor extends LitElement {
         .data=${this.config}
         .schema=${[
           {
-            name: "mode",
-            label: "Radar mode",
-            selector: {
-              select: {
-                options: [
-                  { value: "5min", label: "5-min (2h nowcast)" },
-                  { value: "15min", label: "15-min (14h forecast)" },
-                ],
-              },
-            },
-          },
-          {
             name: "center_entity",
             label: "Center map on entity",
             selector: { entity: { domain: ["zone", "device_tracker"] } },
@@ -1057,6 +995,177 @@ try {
   customElements.define("rainradar-card-editor", RainradarCardEditor);
 } catch (e) {}
 
+// Full DWD Niederschlagsradar color ramp (from GetLegendGraphic on the
+// WMS at https://maps.dwd.de/geoserver/dwd/ows). The map card no longer
+// ships an inline legend (it was too sparse — 4 bands, and the user
+// wants the full breakdown). This standalone card is added via the
+// Lovelace card picker and shows every band, in order of intensity, with
+// its mm/h range.
+const DWD_RADAR_BANDS = [
+  { color: "#00e8e8", label: "trace",         range: "0.1 – 0.2" },
+  { color: "#00d070", label: "very light",    range: "0.2 – 0.4" },
+  { color: "#00d000", label: "light",         range: "0.4 – 1.0" },
+  { color: "#00b800", label: "light–moderate", range: "1.0 – 2.0" },
+  { color: "#b4e600", label: "moderate",      range: "2.0 – 3.0" },
+  { color: "#f0e800", label: "moderate",      range: "3.0 – 5.0" },
+  { color: "#ffc800", label: "moderate–heavy", range: "5.0 – 7.5" },
+  { color: "#ff9600", label: "heavy",         range: "7.5 – 10" },
+  { color: "#ff6400", label: "heavy",         range: "10 – 15" },
+  { color: "#ff0000", label: "very heavy",    range: "15 – 30" },
+  { color: "#c80000", label: "very heavy",    range: "30 – 45" },
+  { color: "#c80064", label: "extreme",       range: "45 – 75" },
+  { color: "#c800c8", label: "extreme",       range: "75 – 100" },
+  { color: "#9600c8", label: "extreme",       range: "100 – 150" },
+  { color: "#0000c8", label: "violent",       range: "≥ 150" },
+];
+
+class RainradarLegendCard extends LitElement {
+  static properties = {
+    hass: { type: Object },
+    config: { type: Object },
+    _isPreview: { state: true },
+  };
+
+  constructor() {
+    super();
+    this._isPreview = false;
+  }
+
+  static styles = css`
+    :host {
+      display: block;
+      box-sizing: border-box;
+      font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
+    }
+    ha-card {
+      padding: 12px 14px;
+      background: rgba(20, 20, 20, 0.92);
+      color: #fff;
+      border-radius: var(--ha-card-border-radius, 12px);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.5);
+      border: 1px solid rgba(255,255,255,0.08);
+      display: block;
+    }
+    .title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 2px;
+      letter-spacing: 0.2px;
+    }
+    .subtitle {
+      font-size: 11px;
+      opacity: 0.7;
+      margin-bottom: 10px;
+    }
+    .band {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      padding: 3px 0;
+      line-height: 1.3;
+    }
+    .swatch {
+      width: 18px;
+      height: 18px;
+      border-radius: 3px;
+      flex: 0 0 18px;
+      border: 1px solid rgba(0,0,0,0.35);
+    }
+    .label {
+      flex: 1 1 auto;
+    }
+    .range {
+      opacity: 0.75;
+      font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+      min-width: 64px;
+    }
+    .unit {
+      opacity: 0.55;
+      font-size: 10px;
+      margin-left: 2px;
+    }
+    .footer {
+      font-size: 10px;
+      opacity: 0.55;
+      margin-top: 8px;
+    }
+  `;
+
+  static getStubConfig() {
+    return {};
+  }
+
+  setConfig(config) {
+    this.config = config || {};
+  }
+
+  getCardSize() {
+    return 3;
+  }
+
+  connectedCallback() {
+    super.connectedCallback();
+    // Same picker-preview guard as the map card: no async work, no
+    // ResizeObserver, no ha-card resize listeners until we are on a
+    // real dashboard. The picker tears the preview down by checking
+    // shadowRoot / parentElement chain; any microtask scheduled here
+    // can keep the spinner spinning past the teardown.
+    this._isPreview = this._isInPreviewContext();
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._isPreview = false;
+  }
+
+  _isInPreviewContext() {
+    let el = this.parentElement;
+    while (el) {
+      const tag = (el.tagName || "").toLowerCase();
+      if (
+        tag === "hui-card-picker" ||
+        tag === "hui-dialog-create-card" ||
+        tag === "hui-card-preview"
+      ) {
+        return true;
+      }
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  render() {
+    if (this._isPreview) {
+      return html`<div
+        style="display:flex;align-items:center;justify-content:center;width:100%;height:100%;min-height:200px;color:var(--secondary-text-color,#666);font-size:14px;"
+      >Rainradar Legend</div>`;
+    }
+    return html`
+      <ha-card>
+        <div class="title">DWD precipitation <span class="unit">mm/h</span></div>
+        <div class="subtitle">Niederschlagsradar · full color ramp</div>
+        ${DWD_RADAR_BANDS.map(
+          (b) => html`
+            <div class="band">
+              <span class="swatch" style="background:${b.color};"></span>
+              <span class="label">${b.label}</span>
+              <span class="range">${b.range}</span>
+            </div>
+          `
+        )}
+        <div class="footer">rainradar v${CARD_VERSION} · place next to the map card</div>
+      </ha-card>
+    `;
+  }
+}
+
+try {
+  customElements.define("rainradar-legend-card", RainradarLegendCard);
+} catch (e) {}
+
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "rainradar-card",
@@ -1064,5 +1173,11 @@ window.customCards.push({
   description: "DWD rain radar map with animation for Germany",
   preview: true,
 });
+window.customCards.push({
+  type: "rainradar-legend-card",
+  name: "Rainradar Legend",
+  description: "Full DWD Niederschlagsradar color legend (15 bands, mm/h)",
+  preview: true,
+});
 
-export { RainradarCard };
+export { RainradarCard, RainradarLegendCard };

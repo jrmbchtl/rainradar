@@ -6,24 +6,24 @@ No API keys required — all data comes from free DWD sources.
 
 ## Features
 
-- **Server-prefetched radar frames** — the integration downloads the full 900×900 composite PNG for each timestamp server-side, caches it under `<config>/.storage/rainradar/frames/<entry_id>/`, and serves it through a static path. The card plays back by swapping a single `L.imageOverlay` URL, so no parallel tile requests hit the browser and the radar aligns to the OSM base by construction.
-- **Dual mode** — 5-min interval (2h RADVOR nowcast) and 15-min interval (14h ICON-D2 forecast)
+- **Server-prefetched radar frames** — the integration downloads the full 1200×900 composite PNG for each timestamp server-side, caches it under `<config>/.storage/rainradar/frames/<entry_id>/`, and serves it through a static path. The card plays back by swapping a single `L.imageOverlay` URL, so no parallel tile requests hit the browser and the radar aligns to the OSM base by construction. PNGs are post-processed (R==G==B pixels → alpha=0) so the OSM basemap shows through outside the radar coverage and on "no rain" areas.
+- **5-min radar loop** — 2h past + 2h nowcast (RADVOR), 48 frames at 5-min cadence. The ICON-D2 hourly forecast is **not** included — its 1h cadence couldn't replace the 5-min nowcast without losing resolution, and forecast precision degrades past ~2h.
+- **Companion legend card** — `rainradar-legend-card` shows the full 15-band DWD Niederschlagsradar color ramp (trace / light / moderate / heavy / extreme / violent) with mm/h ranges. Add it via the Lovelace card picker.
 - **Station sensors** — temperature, humidity, wind speed/direction, precipitation per configured location, sourced from the nearest DWD station via haversine matching
 - **Device tracker support** — optionally follow one or more tracked devices for dynamic per-location data
-- **DWD station dots** — ~200 DWD weather stations overlaid on the map with tooltips (no live per-station data is fetched — that would mean ~200 zips × 3 products per update)
 - **Smart location matching** — nearest DWD station automatically picked from the merged TU + FF + RR + KL catalogs
 - **Multiple locations** — configure any number of zones and/or device_trackers in the options flow
-- **Animation controls** — play/pause, timeline scrubber, ½× / 1× / 2× speed, mode toggle, recentre, zoom
+- **Animation controls** — play/pause, timeline scrubber, ½× / 1× / 2× speed, recentre, zoom
 
 ## Data sources
 
 | Source | Data |
 |--------|------|
-| DWD GeoServer WMS (`maps.dwd.de`) | Composite precipitation PNGs (past 2h, 2h nowcast, 14h forecast), full-extent 900×900, EPSG:4326 |
+| DWD GeoServer WMS (`maps.dwd.de`) | `Niederschlagsradar` composite precipitation PNGs (2h past + 2h nowcast), full-extent 1200×900, EPSG:3857, 5-min cadence |
 | DWD CDC OpenData (`opendata.dwd.de`) | Hourly station observations: temperature, humidity, wind, precipitation |
 | DWD station catalog | TU + FF + RR + KL station coordinates for nearest-station matching |
 
-All DWD data is Germany-focused — outside Germany no precipitation tiles are available.
+The radar composite is Germany-only, but the integration asks the WMS for a bbox that extends well beyond the German border (longitudes -2…22, latitudes 42…60) so storms rolling in from France / the Atlantic don't hit a hard "cut-off" edge. Outside the German composite coverage the WMS returns transparent pixels and the OSM basemap shows through.
 
 ## Installation
 
@@ -60,7 +60,6 @@ After adding the integration, add the Rainradar card to any dashboard:
 
 | Field | Description |
 |-------|-------------|
-| **Radar mode** | `5-min` (2h nowcast) or `15-min` (14h forecast) |
 | **Center map on entity** | A `zone.*` or `device_tracker.*` entity to recentre the map on |
 | **Widget height** | 320 / 420 / 560 / 720 px |
 
@@ -68,13 +67,12 @@ After adding the integration, add the Rainradar card to any dashboard:
 
 | Control | Description |
 |---------|-------------|
-| **5-min / 15-min** | Toggle between nowcast (2h, 5-min steps) and forecast (14h, 15-min steps) |
 | **Play / Pause** | Start/stop radar animation |
 | **Timeline slider** | Scrub through individual frames |
 | **Speed buttons** | ½×, 1×, 2× playback speed |
 | **Zoom +/−** | Zoom controls (also available via scroll wheel on the map) |
 | **Re-centre** | Jump back to the configured centre entity |
-| **Station dots** | DWD station locations across Germany (tooltip with station name) |
+| **Diagnostic panel** | `i` button (top-left) shows the loaded card version, frame count, sensor state, frame error, last update, map size and centre |
 
 ## Sensors
 
@@ -95,8 +93,8 @@ Each configured location creates the following sensors. The `frames` and `statio
 
 | Sensor | Purpose |
 |--------|---------|
-| `sensor.rainradar_radar_frames` | Exposes `attributes.frames = {past, nowcast, forecast}`, each a list of `{ts, url}` objects served from the per-entry static path. |
-| `sensor.rainradar_stations` | Exposes `attributes.stations = [{id, name, lat, lon}, ...]` for the DWD station dots. |
+| `sensor.rainradar_radar_frames` | Exposes `attributes.frames = {past, nowcast}`, each a list of `{ts, url}` objects served from the per-entry static path. State = total frame count (48 when all caches populated). |
+| `sensor.rainradar_stations` | State = number of DWD stations loaded into memory. Attributes are empty (the full ~1000-entry catalog was dropped in 0.3.6 because it exceeded the recorder's 16 KiB attribute cap and the card no longer renders station dots). |
 | `sensor.rainradar_<location_name>` | One per configured location with the station snapshot and metadata. |
 
 ## Weather entity

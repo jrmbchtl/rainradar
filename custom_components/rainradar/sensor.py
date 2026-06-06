@@ -178,7 +178,6 @@ class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
         return (
             len(radar_frames.get("past", []))
             + len(radar_frames.get("nowcast", []))
-            + len(radar_frames.get("forecast", []))
         )
 
     @property

@@ -22,7 +22,6 @@ DEFAULT_SCAN_INTERVAL = 600
 
 PAST_FRAMES = 24
 NOWCAST_FRAMES = 24
-FORECAST_FRAMES = 14
 FRAME_INTERVAL_MIN = 5
 
 DWD_WMS_BASE = "https://maps.dwd.de/geoserver/dwd/ows"
@@ -30,12 +29,10 @@ DWD_OPENDATA = "https://opendata.dwd.de"
 
 DWD_WMS_RADAR_LAYER = "Niederschlagsradar"
 DWD_WMS_RADAR_STYLE = "niederschlagsradar"
-DWD_WMS_FORECAST_LAYER = "Icon-eu_reg00625_fd_sl_TOTPREC01H"
-DWD_WMS_FORECAST_STYLE = "icon-eu_reg00625_fd_sl_totprec01h_lawa"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.3.7"
+INTEGRATION_VERSION = "0.3.8"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"

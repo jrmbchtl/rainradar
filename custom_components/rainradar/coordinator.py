@@ -239,6 +239,44 @@ class RainradarCoordinator(DataUpdateCoordinator):
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_bytes(data)
         os.replace(tmp, path)
+        # Post-process: the DWD WMS renders "no data" (outside the German
+        # composite coverage) as opaque grey and "no rain" inside the
+        # coverage as opaque white. A Leaflet imageOverlay would then
+        # paint a grey rectangle + white cloud on top of the OSM basemap
+        # (the user reports a "white/opaque overlay that is distracting").
+        # A neutral pixel (R==G==B) is a good proxy for "no radar data
+        # here" — recolor it to transparent so the basemap shows through.
+        # Colored pixels (R!=G or G!=B) keep the DWD intensity ramp
+        # (cyan→green→yellow→red→magenta→blue). PIL is a HA core dep
+        # but we import lazily and skip silently if missing.
+        RainradarCoordinator._neutralize_png_inplace(path)
+
+    @staticmethod
+    def _neutralize_png_inplace(path: Path) -> None:
+        try:
+            from PIL import Image
+        except ImportError:
+            return
+        try:
+            img = Image.open(path)
+            if img.mode != "RGBA":
+                img = img.convert("RGBA")
+            data = list(img.getdata())
+            new_data = []
+            NEUTRAL_TOL = 4
+            for r, g, b, _a in data:
+                if (
+                    abs(r - g) <= NEUTRAL_TOL
+                    and abs(g - b) <= NEUTRAL_TOL
+                    and abs(r - b) <= NEUTRAL_TOL
+                ):
+                    new_data.append((r, g, b, 0))
+                else:
+                    new_data.append((r, g, b, 255))
+            img.putdata(new_data)
+            img.save(path, "PNG", optimize=True)
+        except Exception as exc:
+            _LOGGER.debug("PIL neutralize failed for %s: %s", path, exc)
 
     async def _prefetch_frames(self, frames: dict[str, list[str]]) -> dict[str, list[dict]]:
         sem = asyncio.Semaphore(4)
@@ -341,10 +379,22 @@ class RainradarCoordinator(DataUpdateCoordinator):
             for f in files:
                 if not f.is_file() or not f.name.endswith(".png"):
                     continue
-                ts_part = f.stem.split("T")[0]
-                try:
-                    file_dt = datetime.strptime(ts_part, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                except ValueError:
+                # Filenames are produced by safe_frame_filename() and
+                # look like 2026-06-06T16-20-00Z.png. Earlier revisions
+                # only parsed the YYYY-MM-DD prefix, which made every
+                # file dated "today" parse as today-midnight UTC. With a
+                # 6h cutoff that meant *every* frame for the current day
+                # got unlinked on the next coordinator update, producing
+                # 404s on URLs the sensor had just advertised. Parse the
+                # full timestamp; fall back to date-only for safety.
+                file_dt = None
+                for fmt in ("%Y-%m-%dT%H-%M-%SZ", "%Y-%m-%dT%H-%M-%S", "%Y-%m-%d"):
+                    try:
+                        file_dt = datetime.strptime(f.stem, fmt).replace(tzinfo=timezone.utc)
+                        break
+                    except ValueError:
+                        continue
+                if file_dt is None:
                     continue
                 if file_dt < cutoff:
                     try:

@@ -98,8 +98,13 @@ async def _register_card(hass: HomeAssistant) -> None:
                             "Failed to remove stale resource %s: %s", item_url, exc
                         )
             if not any(r.get("url") == url for r in items):
+                # res_type: "js" loads the script synchronously, so the
+                # custom element is defined before HA's card picker can
+                # instantiate <rainradar-card>. With "module" the picker
+                # occasionally wins the race and logs
+                # "custom element doesn't exist: rainradar-card".
                 await resources.async_create_item(
-                    {"res_type": "module", "url": url}
+                    {"res_type": "js", "url": url}
                 )
             _LOGGER.info("Rainradar card registered via Lovelace resources")
             hass.data[_CARD_REGISTERED_KEY] = hass

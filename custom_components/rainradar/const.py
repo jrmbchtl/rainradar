@@ -35,7 +35,7 @@ DWD_WMS_FORECAST_STYLE = "icon-eu_reg00625_fd_sl_totprec01h_lawa"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.3.0"
+INTEGRATION_VERSION = "0.3.1"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"

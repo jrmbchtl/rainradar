@@ -1,18 +1,19 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const DWD_WMS = "https://maps.dwd.de/geoserver/dwd/ows";
-const RADAR_LAYER = "Niederschlagsradar";
-const FORECAST_LAYER = "Icon-eu_reg00625_fd_sl_TOTPREC01H";
-
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
 const DEFAULT_CENTER = [51.1657, 10.4515];
 const DEFAULT_ZOOM = 7;
+const DEFAULT_HOME_ZOOM = 9;
 const FRAME_MS = 150;
-const LOAD_TIMEOUT_MS = 15000;
 const DATA_RETRY_MS = 3000;
+
+const RADAR_BOUNDS = [
+  [47.27, 5.7],
+  [55.05, 15.0],
+];
 
 class RainradarCard extends LitElement {
   static properties = {
@@ -21,12 +22,9 @@ class RainradarCard extends LitElement {
     _frames: { state: true },
     _currentIndex: { state: true },
     _playing: { state: true },
-    _loading: { state: true },
-    _loadedFrames: { state: true },
-    _totalFrames: { state: true },
+    _showingNoData: { state: true },
     _speed: { state: true },
     _timeLabel: { state: true },
-    _showingNoData: { state: true },
   };
 
   constructor() {
@@ -34,22 +32,20 @@ class RainradarCard extends LitElement {
     this._frames = [];
     this._currentIndex = 0;
     this._playing = false;
-    this._loading = true;
-    this._loadedFrames = new Set();
-    this._totalFrames = 0;
+    this._showingNoData = true;
     this._speed = 1;
-    this._tileLayers = [];
+    this._timeLabel = "";
     this._map = null;
     this._osmLayer = null;
-    this._markers = [];
+    this._overlay = null;
+    this._centerMarker = null;
     this._stationMarkers = [];
     this._timer = null;
     this._retryTimer = null;
-    this._timeLabel = "";
-    this._lastRadarUpdate = null;
-    this._centerMarker = null;
-    this._showingNoData = false;
     this._resizeObserver = null;
+    this._lastFramesSignature = null;
+    this._lastCenterKey = null;
+    this._hassRef = null;
   }
 
   static styles = css`
@@ -78,32 +74,6 @@ class RainradarCard extends LitElement {
       top: 0;
     }
 
-    #map .leaflet-tile-pane {
-      z-index: 200;
-    }
-
-    #map .leaflet-overlay-pane {
-      z-index: 400;
-    }
-
-    #map .leaflet-shadow-pane {
-      z-index: 500;
-    }
-
-    #map .leaflet-marker-pane {
-      z-index: 600;
-    }
-
-    #map .leaflet-popup-pane {
-      z-index: 700;
-    }
-
-    #map .leaflet-layer {
-      position: absolute;
-      left: 0;
-      top: 0;
-    }
-
     .controls {
       position: absolute;
       inset: 0;
@@ -126,7 +96,23 @@ class RainradarCard extends LitElement {
 
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
-    this.config = { ...RainradarCard.getStubConfig(), ...config };
+    const merged = { ...RainradarCard.getStubConfig(), ...config };
+    const oldConfig = this.config;
+    this.config = merged;
+    if (oldConfig && this._map) {
+      if (oldConfig.mode !== merged.mode) {
+        this._buildFrames();
+      }
+      if (oldConfig.center_entity !== merged.center_entity ||
+          oldConfig.default_location !== merged.default_location) {
+        this._lastCenterKey = null;
+        this._updateCenterMarker();
+        this._recenter();
+      }
+      if (oldConfig.height !== merged.height) {
+        this.style.setProperty("--rainradar-card-height", `${Number(merged.height || 420)}px`);
+      }
+    }
   }
 
   getLayoutOptions() {
@@ -137,10 +123,6 @@ class RainradarCard extends LitElement {
     };
   }
 
-  _getFrameKey(i) {
-    return this._frames[i];
-  }
-
   _getEntityLatLon(entityId) {
     const state = this.hass?.states?.[entityId];
     const attrs = state?.attributes;
@@ -149,199 +131,156 @@ class RainradarCard extends LitElement {
     const lon = attrs.longitude ?? attrs.lon ?? attrs.lng;
     if (lat == null || lon == null) return null;
     const name = attrs.friendly_name || state?.name || entityId;
-    return { lat: Number(lat), lon: Number(lon), name };
+    return { lat: Number(lat), lon: Number(lon), name, id: entityId };
   }
 
   _getConfiguredCenter() {
-    const preferred = this.config.center_entity || "zone.home";
-    return this._getEntityLatLon(preferred)
-      || this._getEntityLatLon("zone.home")
-      || null;
+    const preferred =
+      this.config?.center_entity ||
+      this.config?.default_location ||
+      "zone.home";
+    return (
+      this._getEntityLatLon(preferred) ||
+      this._getEntityLatLon("zone.home") ||
+      null
+    );
   }
 
-  _getStateAttributes(entityIds) {
-    for (const entityId of entityIds) {
-      const state = this.hass?.states?.[entityId];
-      if (state?.attributes) {
-        return state.attributes;
-      }
+  _getFramesData() {
+    const attrs = this._getFramesAttributes();
+    if (!attrs) return null;
+    const frames = attrs.frames || attrs;
+    const past = Array.isArray(frames.past) ? frames.past : [];
+    const nowcast = Array.isArray(frames.nowcast) ? frames.nowcast : [];
+    const forecast = Array.isArray(frames.forecast) ? frames.forecast : [];
+    return { past, nowcast, forecast, lastUpdate: attrs.last_update || null };
+  }
+
+  _getFramesAttributes() {
+    if (this.hass?.states?.["sensor.rainradar_radar_frames"]?.attributes) {
+      return this.hass.states["sensor.rainradar_radar_frames"].attributes;
     }
-    // Fallback: try to discover a likely radar state by scanning all entities
-    try {
-      for (const id of Object.keys(this.hass?.states || {})) {
-        const lid = id.toLowerCase();
-        if ((lid.includes("rain") || lid.includes("radar")) && (lid.includes("frame") || lid.includes("frames") || lid.includes("radar_frames"))) {
-          const s = this.hass.states[id];
-          if (s?.attributes) return s.attributes;
-        }
+    for (const id of Object.keys(this.hass?.states || {})) {
+      const lid = id.toLowerCase();
+      if (lid.includes("rainradar") && lid.includes("radar_frames")) {
+        const attrs = this.hass.states[id]?.attributes;
+        if (attrs) return attrs;
       }
-    } catch (e) {
-      // ignore
     }
     return null;
   }
 
-  _isForecast(frame) {
-    const now = new Date();
-    const ft = new Date(frame);
-    return ft > now;
+  _getStationsData() {
+    if (this.hass?.states?.["sensor.rainradar_stations"]?.attributes) {
+      return this.hass.states["sensor.rainradar_stations"].attributes.stations || [];
+    }
+    for (const id of Object.keys(this.hass?.states || {})) {
+      const lid = id.toLowerCase();
+      if (lid.includes("rainradar") && lid.includes("station")) {
+        const attrs = this.hass.states[id]?.attributes;
+        if (attrs?.stations) return attrs.stations;
+      }
+    }
+    return [];
+  }
+
+  _framesSignature(frames) {
+    return `${frames.lastUpdate || ""}|${frames.past.length}|${frames.nowcast.length}|${frames.forecast.length}`;
   }
 
   _buildFrames() {
-    this._playing = false;
     this._clearTimer();
     this._clearRetryTimer();
-    this._clearTileLayers();
     this._frames = [];
-    this._loadedFrames = new Set();
-    this._tileLayers = [];
     this._currentIndex = 0;
-    this._loading = true;
-    this._totalFrames = 0;
+    this._showingNoData = true;
 
-    const radarData = this._getStateAttributes([
-      "sensor.rainradar_radar_frames",
-      "sensor.rainradar_frames",
-      "sensor.radar_frames",
-      "rainradar.radar_frames",
-    ]);
-    this._lastRadarUpdate = radarData?.last_update || null;
-    if (!radarData) {
-      this._loading = true;
-      this._showingNoData = true;
+    const data = this._getFramesData();
+    if (!data) {
       this._timeLabel = "Waiting for radar data...";
       this._retryTimer = setTimeout(() => {
-        if (this._map) {
-          this._buildFrames();
-        }
+        if (this._map) this._buildFrames();
       }, DATA_RETRY_MS);
       this.requestUpdate();
       return;
     }
-    this._showingNoData = false;
 
-    const past = radarData.past || [];
-    const nowcast = radarData.nowcast || [];
-    const forecast = radarData.forecast || [];
+    const past = data.past;
+    const nowcast = data.nowcast;
+    const forecast = data.forecast;
 
-    if (this.config.mode === "15min") {
-      this._frames = [...past, ...nowcast, ...forecast];
-    } else {
-      this._frames = [...past, ...nowcast];
-    }
+    this._frames =
+      this.config.mode === "15min"
+        ? [...past, ...nowcast, ...forecast]
+        : [...past, ...nowcast];
 
-    if (this._frames.length === 0) {
-      this._loading = false;
-      this._timeLabel = "No frames";
+    if (!this._frames.length) {
+      this._timeLabel = "No frames available";
+      this._showingNoData = true;
       this.requestUpdate();
       return;
     }
 
-    this._totalFrames = this._frames.length;
+    this._showingNoData = false;
+    this._lastFramesSignature = this._framesSignature(data);
 
-    this._frames.forEach((time, i) => {
-      const isFc = this._isForecast(time);
-      const layerName = isFc ? FORECAST_LAYER : RADAR_LAYER;
-      const styleName = isFc ? "icon-eu_reg00625_fd_sl_totprec01h_lawa" : "niederschlagsradar";
-
-      const layer = L.tileLayer.wms(DWD_WMS, {
-        crs: L.CRS.EPSG3857,
-        layers: layerName,
-        styles: styleName,
-        time: time,
-        format: "image/png",
-        transparent: true,
-        version: "1.1.1",
-        opacity: 0,
-        maxZoom: 14,
-        minZoom: 4,
-      });
-
-      const loadTimeout = setTimeout(() => {
-        this._loadedFrames.add(i);
-        this._checkLoadComplete();
-      }, LOAD_TIMEOUT_MS);
-
-      layer.on("load", () => {
-        clearTimeout(loadTimeout);
-        this._loadedFrames.add(i);
-        this._checkLoadComplete();
-      });
-
-      layer.on("tileerror", () => {
-        clearTimeout(loadTimeout);
-        setTimeout(() => {
-          this._loadedFrames.add(i);
-          this._checkLoadComplete();
-        }, 500);
-      });
-
-      this._tileLayers.push(layer);
-    });
-
-    this.requestUpdate();
-  }
-
-  _clearRetryTimer() {
-    if (this._retryTimer) {
-      clearTimeout(this._retryTimer);
-      this._retryTimer = null;
-    }
-  }
-
-  _checkLoadComplete() {
-    const threshold = Math.ceil(this._totalFrames * 0.85);
-    if (this._loadedFrames.size >= threshold && this._loading) {
-      this._loading = false;
-      this._fadeIn();
+    if (!this._map) {
       this.requestUpdate();
+      return;
     }
-  }
 
-  _fadeIn() {
-    this._tileLayers.forEach((layer) => {
-      if (this._map) this._map.addLayer(layer);
-    });
-    this._tileLayers.forEach((layer, i) => {
-      if (i !== 0 && this._map) this._map.removeLayer(layer);
-    });
-    if (this._frames.length > 0) {
-      this._showFrame(0);
+    if (!this._overlay) {
+      this._overlay = L.imageOverlay(
+        this._frames[0].url,
+        RADAR_BOUNDS,
+        { opacity: 0.7, interactive: false, crossOrigin: false }
+      ).addTo(this._map);
+    } else {
+      this._overlay.setUrl(this._frames[0].url);
     }
-    // Ensure Leaflet recalculates sizes so tiles align correctly
-    if (this._map && typeof this._map.invalidateSize === "function") {
-      setTimeout(() => this._map.invalidateSize(false), 120);
-    }
+
+    this._showFrame(0);
+    this.requestUpdate();
   }
 
   _showFrame(idx) {
-    if (!this._map) return;
-    const target = this._tileLayers[idx];
-    if (!target) return;
+    if (!this._map || !this._frames.length) return;
+    const frame = this._frames[idx];
+    if (!frame) return;
 
-    this._tileLayers.forEach((layer, i) => {
-      if (i === idx) {
-        if (!this._map.hasLayer(layer)) {
-          this._map.addLayer(layer);
-        }
-        layer.setOpacity(0.7);
-      } else {
-        if (this._map.hasLayer(layer)) {
-          this._map.removeLayer(layer);
-        }
-      }
-    });
-
-    this._currentIndex = idx;
-    const ts = this._frames[idx];
-    if (ts) {
-      const d = new Date(ts);
-      this._timeLabel = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (this._overlay) {
+      this._overlay.setUrl(frame.url);
     }
+    this._currentIndex = idx;
+    try {
+      const d = new Date(frame.ts);
+      this._timeLabel = d.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    } catch (e) {
+      this._timeLabel = "";
+    }
+    this._preloadAdjacent(idx);
     this.requestUpdate();
   }
 
+  _preloadAdjacent(idx) {
+    if (!this._frames.length || !this._preloaded) return;
+    const n = this._frames.length;
+    for (const delta of [-1, 1, -2, 2]) {
+      const i = ((idx + delta) % n + n) % n;
+      const url = this._frames[i]?.url;
+      if (url && !this._preloaded.has(url)) {
+        this._preloaded.add(url);
+        const img = new Image();
+        img.src = url;
+      }
+    }
+  }
+
   _togglePlay() {
+    if (!this._frames.length) return;
     this._playing = !this._playing;
     if (this._playing) {
       this._tick();
@@ -352,7 +291,7 @@ class RainradarCard extends LitElement {
   }
 
   _tick() {
-    if (!this._playing) return;
+    if (!this._playing || !this._frames.length) return;
     const next = (this._currentIndex + 1) % this._frames.length;
     this._showFrame(next);
     this._timer = setTimeout(() => this._tick(), FRAME_MS / this._speed);
@@ -365,6 +304,13 @@ class RainradarCard extends LitElement {
     }
   }
 
+  _clearRetryTimer() {
+    if (this._retryTimer) {
+      clearTimeout(this._retryTimer);
+      this._retryTimer = null;
+    }
+  }
+
   _setSpeed(speed) {
     this._speed = speed;
     if (this._playing) {
@@ -374,34 +320,47 @@ class RainradarCard extends LitElement {
     this.requestUpdate();
   }
 
-  _onSlider(e) {
-    const idx = parseInt(e.target.value);
-    this._showFrame(idx);
+  _setMode(mode) {
+    if (this.config.mode === mode) return;
+    this.config = { ...this.config, mode };
+    this._buildFrames();
+    this._dispatchConfigChange();
   }
 
-  _clearTileLayers() {
-    this._tileLayers.forEach((layer) => {
-      if (this._map) this._map.removeLayer(layer);
-      layer.off();
-    });
-    this._tileLayers = [];
+  _dispatchConfigChange() {
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config: this.config },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  _onSlider(e) {
+    const idx = parseInt(e.target.value, 10);
+    if (Number.isFinite(idx)) this._showFrame(idx);
   }
 
   _recenter() {
+    if (!this._map) return;
     const center = this._getConfiguredCenter();
     const lat = center?.lat ?? DEFAULT_CENTER[0];
     const lon = center?.lon ?? DEFAULT_CENTER[1];
-    this._map?.setView([lat, lon], DEFAULT_ZOOM + 1);
+    this._map.flyTo([lat, lon], DEFAULT_HOME_ZOOM, { duration: 0.5 });
   }
 
   _updateCenterMarker() {
     if (!this._map) return;
+    const center = this._getConfiguredCenter();
+    const key = center ? `${center.id}|${center.lat}|${center.lon}` : "none";
+    if (key === this._lastCenterKey) return;
+    this._lastCenterKey = key;
+
     if (this._centerMarker) {
       this._map.removeLayer(this._centerMarker);
       this._centerMarker = null;
     }
-
-    const center = this._getConfiguredCenter();
     if (!center) return;
 
     const icon = L.divIcon({
@@ -414,36 +373,29 @@ class RainradarCard extends LitElement {
   }
 
   _updateStationMarkers() {
-    this._stationMarkers.forEach((m) => this._map?.removeLayer(m));
+    if (!this._map) return;
+    this._stationMarkers.forEach((m) => this._map.removeLayer(m));
     this._stationMarkers = [];
 
-    const stations = this._getStateAttributes([
-      "sensor.rainradar_stations",
-      "sensor.rainradar_stations_2",
-      "sensor.stations",
-      "rainradar.stations",
-    ])?.stations;
-    if (!stations || !this._map) return;
+    const stations = this._getStationsData();
+    if (!stations.length) return;
 
     const bounds = this._map.getBounds();
-    stations.forEach((s) => {
-      const lat = Array.isArray(s) ? s[0] : s.lat;
-      const lon = Array.isArray(s) ? s[1] : s.lon;
-      const iconName = Array.isArray(s) ? s[2] : s.icon;
-      const temp = Array.isArray(s) ? s[3] : s.temp;
-      if (!lat || !lon) return;
-      if (!bounds.contains([lat, lon])) return;
-
-      const icon = L.divIcon({
-        html: `<div style="text-align:center;font-size:10px;color:#333;text-shadow:0 0 4px rgba(255,255,255,0.9)"><div style="font-size:18px">${iconName || "⬤"}</div><div>${temp || ""}</div></div>`,
-        className: "",
-        iconSize: [28, 28],
-        iconAnchor: [14, 14],
-      });
-
-      const marker = L.marker([lat, lon], { icon }).addTo(this._map);
+    for (const s of stations) {
+      if (!s || typeof s.lat !== "number" || typeof s.lon !== "number") continue;
+      if (!bounds.contains([s.lat, s.lon])) continue;
+      const tooltip = s.name ? `${s.name}` : "";
+      const marker = L.circleMarker([s.lat, s.lon], {
+        radius: 3,
+        color: "#03a9f4",
+        fillColor: "#03a9f4",
+        fillOpacity: 0.6,
+        weight: 1,
+      })
+        .bindTooltip(tooltip, { direction: "top", offset: [0, -4] })
+        .addTo(this._map);
       this._stationMarkers.push(marker);
-    });
+    }
   }
 
   _loadLeafletCSS() {
@@ -456,35 +408,32 @@ class RainradarCard extends LitElement {
   }
 
   firstUpdated() {
+    this.style.setProperty(
+      "--rainradar-card-height",
+      `${Number(this.config?.height || 420)}px`
+    );
     this._loadLeafletCSS();
+    this._preloaded = new Set();
     requestAnimationFrame(() => this._initMap());
-    // Observe host size changes to keep Leaflet tiles aligned when the card is resized
     try {
       this._resizeObserver = new ResizeObserver(() => {
-        if (this._map && typeof this._map.invalidateSize === "function") {
-          // small delay allows layout to settle
+        if (this._map) {
           setTimeout(() => this._map.invalidateSize(false), 80);
         }
       });
       this._resizeObserver.observe(this);
     } catch (e) {
-      // ResizeObserver not supported -> ignore
+      // ResizeObserver not supported
     }
   }
 
   _initMap() {
     const container = this.shadowRoot?.getElementById("map");
-    if (!container) return;
-    if (this._map) {
-      try {
-        this._map.invalidateSize(false);
-      } catch (e) {}
-      return;
-    }
+    if (!container || this._map) return;
 
     const center = this._getConfiguredCenter();
     const initialCenter = center ? [center.lat, center.lon] : DEFAULT_CENTER;
-    const zoom = center ? DEFAULT_ZOOM + 2 : DEFAULT_ZOOM;
+    const zoom = center ? DEFAULT_HOME_ZOOM : DEFAULT_ZOOM;
 
     this._map = L.map(container, {
       crs: L.CRS.EPSG3857,
@@ -492,6 +441,8 @@ class RainradarCard extends LitElement {
       zoom,
       zoomControl: false,
       attributionControl: true,
+      scrollWheelZoom: "center",
+      worldCopyJump: true,
     });
 
     this._osmLayer = L.tileLayer(OSM_URL, {
@@ -503,44 +454,25 @@ class RainradarCard extends LitElement {
     this._map.on("moveend", () => this._updateStationMarkers());
     this._map.whenReady(() => {
       this._updateCenterMarker();
+      this._updateStationMarkers();
       this._buildFrames();
-      // Give the layout a moment then invalidate size to avoid tile misplacement
-      setTimeout(() => {
-        try {
-          this._map.invalidateSize(false);
-        } catch (e) {
-          // ignore
-        }
-      }, 200);
+      this._map.attributionControl.addAttribution("DWD");
+      setTimeout(() => this._map.invalidateSize(false), 200);
     });
   }
 
   updated(changed) {
-    if (changed.has("hass") && this._map) {
-      const radarData = this._getStateAttributes([
-        "sensor.rainradar_radar_frames",
-        "sensor.rainradar_frames",
-        "sensor.radar_frames",
-        "rainradar.radar_frames",
-      ]);
-      const radarUpdate = radarData?.last_update || null;
-      if (!this._frames.length || (radarUpdate && radarUpdate !== this._lastRadarUpdate)) {
+    if (changed.has("hass") && this.hass && this.hass !== this._hassRef) {
+      this._hassRef = this.hass;
+      const data = this._getFramesData();
+      if (!data) {
+        this._buildFrames();
+      } else if (this._framesSignature(data) !== this._lastFramesSignature) {
         this._buildFrames();
       } else {
         this._updateCenterMarker();
         this._updateStationMarkers();
       }
-      // Ensure map keeps tiles aligned after state-driven updates
-      try {
-        this._map.invalidateSize(false);
-      } catch (e) {}
-    }
-
-    if (changed.has("config") && this._map) {
-      const height = Number(this.config?.height || 420);
-      this.style.setProperty("--rainradar-card-height", `${height}px`);
-      this._updateCenterMarker();
-      this._recenter();
     }
   }
 
@@ -552,91 +484,161 @@ class RainradarCard extends LitElement {
       this._map.remove();
       this._map = null;
     }
+    this._overlay = null;
+    this._centerMarker = null;
+    this._stationMarkers = [];
     if (this._resizeObserver) {
-      try { this._resizeObserver.disconnect(); } catch (e) {}
+      try {
+        this._resizeObserver.disconnect();
+      } catch (e) {}
       this._resizeObserver = null;
     }
   }
 
   render() {
-    const pct = this._totalFrames > 0
-      ? Math.round((this._loadedFrames.size / this._totalFrames) * 100)
-      : 0;
     const maxIdx = Math.max(0, this._frames.length - 1);
-    const height = Number(this.config?.height || 420);
-
-    this.style.setProperty("--rainradar-card-height", `${height}px`);
 
     return html`
       <div id="map"></div>
 
-      ${this._loading ? html`
-        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:var(--ha-card-background,#fff);padding:16px 24px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);text-align:center;">
-          <div>${this._showingNoData ? "Waiting for radar data..." : "Loading radar data..."}</div>
-          <div style="font-size:12px;margin-top:4px;">${pct}% (${this._loadedFrames.size}/${this._totalFrames})</div>
-        </div>
-      ` : nothing}
+      ${this._showingNoData
+        ? html`
+            <div
+              style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2000;background:var(--ha-card-background,#fff);padding:16px 24px;border-radius:12px;box-shadow:0 2px 12px rgba(0,0,0,0.2);text-align:center;"
+            >
+              <div>${this._timeLabel || "Loading radar data..."}</div>
+            </div>
+          `
+        : nothing}
 
       <div class="controls">
-        <div style="position:absolute;top:8px;left:8px;display:flex;gap:4px;pointer-events:none;">
-        <div style="display:flex;gap:2px;background:var(--ha-card-background,#fff);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.15);overflow:hidden;pointer-events:auto;font-size:12px;">
-          <button class="${this.config.mode === "5min" ? "active" : ""}"
-            style="padding:6px 12px;border:none;cursor:pointer;background:${this.config.mode === "5min" ? "var(--primary-color,#03a9f4)" : "transparent"};color:${this.config.mode === "5min" ? "#fff" : "var(--primary-text-color,#333)"};font-weight:${this.config.mode === "5min" ? "600" : "400"}"
-            @click=${() => { this.config.mode = "5min"; this._buildFrames(); }}>
+        <div
+          style="position:absolute;top:8px;left:8px;display:flex;gap:2px;background:var(--ha-card-background,#fff);border-radius:8px;box-shadow:0 1px 4px rgba(0,0,0,0.15);overflow:hidden;pointer-events:auto;font-size:12px;"
+        >
+          <button
+            style="padding:6px 12px;border:none;cursor:pointer;background:${this
+              .config.mode === "5min"
+              ? "var(--primary-color,#03a9f4)"
+              : "transparent"};color:${this.config.mode === "5min"
+              ? "#fff"
+              : "var(--primary-text-color,#333)"};font-weight:${this.config.mode ===
+            "5min"
+              ? "600"
+              : "400"}"
+            @click=${() => this._setMode("5min")}
+          >
             5-min
           </button>
-          <button class="${this.config.mode === "15min" ? "active" : ""}"
-            style="padding:6px 12px;border:none;cursor:pointer;background:${this.config.mode === "15min" ? "var(--primary-color,#03a9f4)" : "transparent"};color:${this.config.mode === "15min" ? "#fff" : "var(--primary-text-color,#333)"};font-weight:${this.config.mode === "15min" ? "600" : "400"}"
-            @click=${() => { this.config.mode = "15min"; this._buildFrames(); }}>
+          <button
+            style="padding:6px 12px;border:none;cursor:pointer;background:${this
+              .config.mode === "15min"
+              ? "var(--primary-color,#03a9f4)"
+              : "transparent"};color:${this.config.mode === "15min"
+              ? "#fff"
+              : "var(--primary-text-color,#333)"};font-weight:${this.config.mode ===
+            "15min"
+              ? "600"
+              : "400"}"
+            @click=${() => this._setMode("15min")}
+          >
             15-min
           </button>
         </div>
+
+        <div
+          style="position:absolute;top:48px;right:8px;display:flex;flex-direction:column;gap:2px;pointer-events:auto;"
+        >
+          <button
+            style="background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px 12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);font-size:16px;font-weight:700;color:var(--primary-text-color,#333);line-height:1;"
+            @click=${() => this._map?.zoomIn()}
+            title="Zoom in"
+          >
+            +
+          </button>
+          <button
+            style="background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px 12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);font-size:16px;font-weight:700;color:var(--primary-text-color,#333);line-height:1;"
+            @click=${() => this._map?.zoomOut()}
+            title="Zoom out"
+          >
+            −
+          </button>
         </div>
 
-        <div style="position:absolute;top:48px;right:8px;display:flex;flex-direction:column;gap:2px;pointer-events:auto;">
-        <button style="background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px 12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);font-size:16px;font-weight:700;color:var(--primary-text-color,#333);line-height:1;"
-          @click=${() => this._map?.zoomIn()} title="Zoom in">+</button>
-        <button style="background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px 12px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);font-size:16px;font-weight:700;color:var(--primary-text-color,#333);line-height:1;"
-          @click=${() => this._map?.zoomOut()} title="Zoom out">−</button>
-        </div>
-
-        <button style="position:absolute;top:8px;right:8px;pointer-events:auto;background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);display:flex;align-items:center;justify-content:center;color:var(--primary-text-color,#333);font-size:18px;"
-        @click=${this._recenter} title="Recenter to home">
-        <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
-      </button>
-
-        <div style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:var(--ha-card-background,#fff);padding:6px 14px;border-radius:24px;box-shadow:0 2px 8px rgba(0,0,0,0.2);font-size:13px;pointer-events:auto;">
-        <button style="background:none;border:none;cursor:pointer;padding:4px 6px;border-radius:4px;display:flex;align-items:center;color:var(--primary-text-color,#333);font-size:16px;"
-          @click=${this._togglePlay} title=${this._playing ? "Pause" : "Play"}>
-          <ha-icon icon=${this._playing ? "mdi:pause" : "mdi:play"}></ha-icon>
+        <button
+          style="position:absolute;top:8px;right:8px;pointer-events:auto;background:var(--ha-card-background,#fff);border:none;border-radius:8px;padding:8px;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,0.15);display:flex;align-items:center;justify-content:center;color:var(--primary-text-color,#333);font-size:18px;"
+          @click=${this._recenter}
+          title="Recenter to home"
+        >
+          <ha-icon icon="mdi:crosshairs-gps"></ha-icon>
         </button>
 
-        <input type="range" min="0" max=${maxIdx} .value=${this._currentIndex}
-          @input=${this._onSlider}
-          style="width:100px;height:4px;-webkit-appearance:none;background:var(--secondary-text-color,#999);border-radius:2px;outline:none;cursor:pointer;" />
+        <div
+          style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:var(--ha-card-background,#fff);padding:6px 14px;border-radius:24px;box-shadow:0 2px 8px rgba(0,0,0,0.2);font-size:13px;pointer-events:auto;"
+        >
+          <button
+            style="background:none;border:none;cursor:pointer;padding:4px 6px;border-radius:4px;display:flex;align-items:center;color:var(--primary-text-color,#333);font-size:16px;"
+            @click=${this._togglePlay}
+            title=${this._playing ? "Pause" : "Play"}
+          >
+            <ha-icon icon=${this._playing ? "mdi:pause" : "mdi:play"}></ha-icon>
+          </button>
 
-        <span style="font-size:11px;color:var(--secondary-text-color,#666);min-width:70px;text-align:center;">${this._timeLabel}</span>
+          <input
+            type="range"
+            min="0"
+            max=${maxIdx}
+            .value=${this._currentIndex}
+            @input=${this._onSlider}
+            style="width:100px;height:4px;-webkit-appearance:none;background:var(--secondary-text-color,#999);border-radius:2px;outline:none;cursor:pointer;"
+          />
 
-        <button style="background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:4px;color:var(--primary-text-color,#333);font-size:11px;font-weight:${this._speed === 0.5 ? "700" : "400"};color:${this._speed === 0.5 ? "var(--primary-color,#03a9f4)" : "inherit"}"
-          @click=${() => this._setSpeed(0.5)}>½×</button>
-        <button style="background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:4px;color:var(--primary-text-color,#333);font-size:11px;font-weight:${this._speed === 1 ? "700" : "400"};color:${this._speed === 1 ? "var(--primary-color,#03a9f4)" : "inherit"}"
-          @click=${() => this._setSpeed(1)}>1×</button>
-        <button style="background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:4px;color:var(--primary-text-color,#333);font-size:11px;font-weight:${this._speed === 2 ? "700" : "400"};color:${this._speed === 2 ? "var(--primary-color,#03a9f4)" : "inherit"}"
-          @click=${() => this._setSpeed(2)}>2×</button>
+          <span
+            style="font-size:11px;color:var(--secondary-text-color,#666);min-width:70px;text-align:center;"
+            >${this._timeLabel}</span
+          >
+
+          ${[0.5, 1, 2].map(
+            (s) => html`
+              <button
+                style="background:none;border:none;cursor:pointer;padding:2px 5px;border-radius:4px;font-size:11px;font-weight:${this
+                  ._speed === s
+                  ? "700"
+                  : "400"};color:${this._speed === s
+                  ? "var(--primary-color,#03a9f4)"
+                  : "var(--primary-text-color,#333)"}"
+                @click=${() => this._setSpeed(s)}
+              >
+                ${s === 1 ? "1×" : s === 0.5 ? "½×" : "2×"}
+              </button>
+            `
+          )}
         </div>
       </div>
 
-      <div style="position:absolute;bottom:76px;right:8px;z-index:1100;background:rgba(255,255,255,0.9);padding:4px 8px;border-radius:6px;font-size:10px;box-shadow:0 1px 4px rgba(0,0,0,0.15);line-height:1.5;pointer-events:auto;">
-        <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#00ff00;display:inline-block;"></span> light</div>
-        <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#00aaff;display:inline-block;"></span> moderate</div>
-        <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#ff0000;display:inline-block;"></span> heavy</div>
-        <div style="display:flex;align-items:center;gap:3px;"><span style="width:10px;height:10px;border-radius:2px;background:#ff00ff;display:inline-block;"></span> extreme</div>
+      <div
+        style="position:absolute;bottom:76px;right:8px;z-index:1100;background:rgba(255,255,255,0.9);padding:4px 8px;border-radius:6px;font-size:10px;box-shadow:0 1px 4px rgba(0,0,0,0.15);line-height:1.5;pointer-events:auto;"
+      >
+        <div style="font-weight:600;margin-bottom:2px;">DWD precipitation</div>
+        <div style="display:flex;align-items:center;gap:3px;">
+          <span style="width:10px;height:10px;border-radius:2px;background:#00ff00;display:inline-block;"></span> light
+        </div>
+        <div style="display:flex;align-items:center;gap:3px;">
+          <span style="width:10px;height:10px;border-radius:2px;background:#00aaff;display:inline-block;"></span> moderate
+        </div>
+        <div style="display:flex;align-items:center;gap:3px;">
+          <span style="width:10px;height:10px;border-radius:2px;background:#ff0000;display:inline-block;"></span> heavy
+        </div>
+        <div style="display:flex;align-items:center;gap:3px;">
+          <span style="width:10px;height:10px;border-radius:2px;background:#ff00ff;display:inline-block;"></span> extreme
+        </div>
       </div>
     `;
   }
 }
 
-try { customElements.define("rainradar-card", RainradarCard); } catch (e) {}
+try {
+  customElements.define("rainradar-card", RainradarCard);
+} catch (e) {}
 
 class RainradarCardEditor extends LitElement {
   static properties = {
@@ -649,22 +651,13 @@ class RainradarCardEditor extends LitElement {
   }
 
   _handleChange() {
-    const ev = new CustomEvent("config-changed", {
-      detail: { config: this.config },
-      bubbles: true,
-      composed: true,
-    });
-    this.dispatchEvent(ev);
-  }
-
-  _modeChanged(e) {
-    this.config.mode = e.target.value;
-    this._handleChange();
-  }
-
-  _defaultLocChanged(e) {
-    this.config.default_location = e.target.value;
-    this._handleChange();
+    this.dispatchEvent(
+      new CustomEvent("config-changed", {
+        detail: { config: this.config },
+        bubbles: true,
+        composed: true,
+      })
+    );
   }
 
   render() {
@@ -678,10 +671,14 @@ class RainradarCardEditor extends LitElement {
           {
             name: "mode",
             label: "Radar mode",
-            selector: { select: { options: [
-              { value: "5min", label: "5-min (2h nowcast)" },
-              { value: "15min", label: "15-min (14h forecast)" },
-            ]}},
+            selector: {
+              select: {
+                options: [
+                  { value: "5min", label: "5-min (2h nowcast)" },
+                  { value: "15min", label: "15-min (14h forecast)" },
+                ],
+              },
+            },
           },
           {
             name: "center_entity",
@@ -691,22 +688,31 @@ class RainradarCardEditor extends LitElement {
           {
             name: "height",
             label: "Widget height",
-            selector: { select: { options: [
-              { value: 320, label: "320 px" },
-              { value: 420, label: "420 px" },
-              { value: 560, label: "560 px" },
-              { value: 720, label: "720 px" },
-            ]}},
+            selector: {
+              select: {
+                options: [
+                  { value: 320, label: "320 px" },
+                  { value: 420, label: "420 px" },
+                  { value: 560, label: "560 px" },
+                  { value: 720, label: "720 px" },
+                ],
+              },
+            },
           },
         ]}
         .computeLabel=${(s) => s.label}
-        @value-changed=${this._handleChange}
+        @value-changed=${(e) => {
+          this.config = { ...this.config, ...e.detail.value };
+          this._handleChange();
+        }}
       ></ha-form>
     `;
   }
 }
 
-try { customElements.define("rainradar-card-editor", RainradarCardEditor); } catch (e) {}
+try {
+  customElements.define("rainradar-card-editor", RainradarCardEditor);
+} catch (e) {}
 
 window.customCards = window.customCards || [];
 window.customCards.push({

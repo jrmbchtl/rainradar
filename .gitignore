@@ -1,7 +1,7 @@
 AGENTS.md
 node_modules/
 __pycache__/
-*.py[cod]
 *.log
 .DS_Store
 *.swp
+*.pyc

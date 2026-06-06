@@ -8,16 +8,15 @@ from .const import DWD_OPENDATA
 
 _LOGGER = logging.getLogger(__name__)
 
-STATION_LIST_URL = (
-    "https://opendata.dwd.de/climate_environment/CDC/observations_germany/"
-    "climate/hourly/air_temperature/recent/"
-    "TU_Stundenwerte_Beschreibung_Stationen.txt"
-)
-
-STATION_FALLBACK_URL = (
-    "https://opendata.dwd.de/climate_environment/CDC/observations_germany/"
-    "climate/daily/kl/recent/"
-    "KL_Tageswerte_Beschreibung_Stationen.txt"
+STATION_LIST_URLS = (
+    f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/hourly/"
+    "air_temperature/recent/TU_Stundenwerte_Beschreibung_Stationen.txt",
+    f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/hourly/"
+    "wind/recent/FF_Stundenwerte_Beschreibung_Stationen.txt",
+    f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/hourly/"
+    "precipitation/recent/RR_Stundenwerte_Beschreibung_Stationen.txt",
+    f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/daily/"
+    "kl/recent/KL_Tageswerte_Beschreibung_Stationen.txt",
 )
 
 
@@ -33,7 +32,7 @@ class DWDStation:
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371
     d_lat = math.radians(lat2 - lat1)
-    d_lon = math.radians(lon2 - lon1)
+    d_lon = math.radians(lon1 - lon2)
     a = (
         math.sin(d_lat / 2) ** 2
         + math.cos(math.radians(lat1))
@@ -73,33 +72,32 @@ def _parse_station_line(line: str) -> DWDStation | None:
         lon = float(parts[5].replace(",", "."))
         rest = parts[6].rsplit(maxsplit=2)
         name = rest[0].strip('" ') if rest else ""
-        if station_id and name:
-            return DWDStation(station_id, name, lat, lon)
+        if not station_id or not name:
+            return None
+        return DWDStation(station_id, name, lat, lon)
     except (ValueError, IndexError):
-        pass
-    return None
+        return None
 
 
 async def fetch_stations(session: aiohttp.ClientSession) -> list[DWDStation]:
-    stations = []
-    urls = [STATION_LIST_URL, STATION_FALLBACK_URL]
-    for url in urls:
+    by_id: dict[str, DWDStation] = {}
+    for url in STATION_LIST_URLS:
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status != 200:
+                    _LOGGER.debug("Station list %s returned %s", url, resp.status)
                     continue
                 raw = await resp.read()
-                text = raw.decode("latin-1", errors="replace")
-                lines = text.split("\n")
-                for line in lines[2:]:
-                    station = _parse_station_line(line)
-                    if station is not None:
-                        stations.append(station)
-                if stations:
-                    break
+            text = raw.decode("latin-1", errors="replace")
+            for line in text.split("\n")[2:]:
+                station = _parse_station_line(line)
+                if station is None:
+                    continue
+                by_id.setdefault(station.station_id, station)
         except Exception as exc:
             _LOGGER.warning("Failed to fetch stations from %s: %s", url, exc)
             continue
+    stations = list(by_id.values())
     _LOGGER.info("Loaded %d active DWD stations", len(stations))
     return stations
 

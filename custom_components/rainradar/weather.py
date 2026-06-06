@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
-
 from homeassistant.components.weather import WeatherEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -21,7 +19,9 @@ from .const import (
     CONF_DEVICE_TRACKERS,
     CONF_ZONES,
     CONF_TRACKED_LOCATION_NAME,
+    INTEGRATION_VERSION,
 )
+from .coordinator import RainradarCoordinator
 
 
 async def async_setup_entry(
@@ -83,10 +83,11 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
     _attr_native_temperature_unit = UnitOfTemperature.CELSIUS
     _attr_native_pressure_unit = UnitOfPressure.HPA
     _attr_native_wind_speed_unit = UnitOfSpeed.KILOMETERS_PER_HOUR
+    _attr_has_entity_name = True
 
     def __init__(
         self,
-        coordinator,
+        coordinator: RainradarCoordinator,
         entry: ConfigEntry,
         loc_key: str,
         loc_name: str,
@@ -98,37 +99,37 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         self._loc_name = loc_name
         self._safe_name = safe_name
         self._attr_unique_id = f"{DOMAIN}_weather_{safe_name}"
-        self._attr_name = f"Rainradar {loc_name}"
-        self._attr_has_entity_name = True
+        self._attr_name = loc_name
         self._attr_device_info = {
             "identifiers": {(DOMAIN, f"{entry.entry_id}_{safe_name}")},
             "name": f"Rainradar {loc_name}",
             "manufacturer": "DWD",
             "model": "Weather Station",
-            "sw_version": "0.1.0",
+            "sw_version": INTEGRATION_VERSION,
         }
 
     @property
     def available(self) -> bool:
-        return self.coordinator.data is not None
+        if not (self.coordinator.last_update_success and self.coordinator.data):
+            return False
+        return bool(
+            self.coordinator.data.get("locations", {}).get(self._loc_key, {}).get("temperature")
+        )
+
+    def _loc_data(self) -> dict:
+        return self.coordinator.data.get("locations", {}).get(self._loc_key, {})
 
     @property
     def condition(self):
-        data = self.coordinator.data or {}
-        loc_data = data.get("locations", {}).get(self._loc_key, {})
-        return loc_data.get("condition")
+        return self._loc_data().get("condition")
 
     @property
     def native_temperature(self):
-        data = self.coordinator.data or {}
-        loc_data = data.get("locations", {}).get(self._loc_key, {})
-        return loc_data.get("temperature")
+        return self._loc_data().get("temperature")
 
     @property
     def native_humidity(self):
-        data = self.coordinator.data or {}
-        loc_data = data.get("locations", {}).get(self._loc_key, {})
-        return loc_data.get("humidity")
+        return self._loc_data().get("humidity")
 
     @property
     def native_pressure(self):
@@ -136,20 +137,15 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def native_wind_speed(self):
-        data = self.coordinator.data or {}
-        loc_data = data.get("locations", {}).get(self._loc_key, {})
-        return loc_data.get("wind_speed")
+        return self._loc_data().get("wind_speed")
 
     @property
     def native_wind_bearing(self):
-        data = self.coordinator.data or {}
-        loc_data = data.get("locations", {}).get(self._loc_key, {})
-        return loc_data.get("wind_direction")
+        return self._loc_data().get("wind_direction")
 
     @property
     def extra_state_attributes(self) -> dict | None:
-        data = self.coordinator.data or {}
-        loc_data = data.get("locations", {}).get(self._loc_key, {})
+        loc_data = self._loc_data()
         attrs = {
             "station_name": loc_data.get("station_name"),
             "station_distance_km": loc_data.get("station_distance_km"),
@@ -160,19 +156,4 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def forecast(self):
-        data = self.coordinator.data or {}
-        forecast_times = (data.get("radar_frames") or {}).get("forecast", [])
-        forecasts = []
-        for forecast_time in forecast_times:
-            try:
-                dt = datetime.fromisoformat(forecast_time.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            forecasts.append(
-                {
-                    "datetime": dt,
-                    "condition": "rainy",
-                    "precipitation_probability": 100,
-                }
-            )
-        return forecasts
+        return None

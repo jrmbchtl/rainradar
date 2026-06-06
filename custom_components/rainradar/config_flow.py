@@ -18,17 +18,8 @@ from .const import (
     CONF_ZONES,
     CONF_NAME,
     DEFAULT_SCAN_INTERVAL,
+    normalize_entity_list,
 )
-
-
-def _normalize_entity_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str)]
-    return []
 
 
 def _zones_to_locations(hass, zone_entities: list[str]) -> list[dict[str, Any]]:
@@ -61,8 +52,8 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
         if user_input is not None:
-            zone_entities = _normalize_entity_list(user_input.get(CONF_ZONES))
-            device_trackers = _normalize_entity_list(user_input.get(CONF_DEVICE_TRACKERS))
+            zone_entities = normalize_entity_list(user_input.get(CONF_ZONES))
+            device_trackers = normalize_entity_list(user_input.get(CONF_DEVICE_TRACKERS))
 
             return self.async_create_entry(
                 title="Rainradar",
@@ -112,15 +103,15 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         current_locations = self._config_entry.options.get(CONF_LOCATIONS, [])
-        zones = _normalize_entity_list(self._config_entry.options.get(CONF_ZONES))
+        zones = normalize_entity_list(self._config_entry.options.get(CONF_ZONES))
         if not zones and self.hass.states.get("zone.home") is not None:
             zones = ["zone.home"]
 
-        device_trackers = _normalize_entity_list(
+        device_trackers = normalize_entity_list(
             self._config_entry.options.get(CONF_DEVICE_TRACKERS)
         )
         if not device_trackers:
-            device_trackers = _normalize_entity_list(
+            device_trackers = normalize_entity_list(
                 self._config_entry.options.get(CONF_DEVICE_TRACKER)
             )
 
@@ -129,8 +120,8 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
         )
 
         if user_input is not None:
-            zones = _normalize_entity_list(user_input.get(CONF_ZONES))
-            device_trackers = _normalize_entity_list(user_input.get(CONF_DEVICE_TRACKERS))
+            zones = normalize_entity_list(user_input.get(CONF_ZONES))
+            device_trackers = normalize_entity_list(user_input.get(CONF_DEVICE_TRACKERS))
 
             return self.async_create_entry(
                 title="",

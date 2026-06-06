@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -15,6 +15,7 @@ from .const import (
     CONF_DEVICE_TRACKERS,
     CONF_ZONES,
     CONF_TRACKED_LOCATION_NAME,
+    INTEGRATION_VERSION,
     SENSOR_TYPES,
     ATTR_TEMPERATURE,
     ATTR_HUMIDITY,
@@ -97,7 +98,11 @@ async def async_setup_entry(
 
     for zone_entity in zones:
         zone_state = hass.states.get(zone_entity)
-        zone_name = zone_state.attributes.get("friendly_name", zone_entity) if zone_state else zone_entity
+        zone_name = (
+            zone_state.attributes.get("friendly_name", zone_entity)
+            if zone_state
+            else zone_entity
+        )
         safe_zone = zone_entity.replace(".", "_").replace("-", "_")
         add_location_entities(f"zone::{zone_entity}", zone_name, safe_zone)
 
@@ -115,7 +120,9 @@ async def async_setup_entry(
             else entry.options.get(CONF_TRACKED_LOCATION_NAME, tracker_entity)
         )
         safe_tracked = tracker_entity.replace(".", "_").replace("-", "_")
-        add_location_entities(f"tracker::{tracker_entity}", tracked_name, safe_tracked)
+        add_location_entities(
+            f"tracker::{tracker_entity}", tracked_name, safe_tracked
+        )
 
     _cleanup_deprecated_entities(hass, safe_names)
 
@@ -132,7 +139,19 @@ def _cleanup_deprecated_entities(hass: HomeAssistant, safe_names: list[str]) -> 
                 registry.async_remove(entity_id)
 
 
+def _common_device_info(entry: ConfigEntry, suffix: str, name: str, model: str) -> dict:
+    return {
+        "identifiers": {(DOMAIN, f"{entry.entry_id}_{suffix}")},
+        "name": name,
+        "manufacturer": "DWD",
+        "model": model,
+        "sw_version": INTEGRATION_VERSION,
+    }
+
+
 class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
     def __init__(
         self,
         coordinator: RainradarCoordinator,
@@ -142,13 +161,13 @@ class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{DOMAIN}_radar_frames"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, f"{entry.entry_id}_summary")},
-            "name": "Rainradar",
-            "manufacturer": "DWD",
-            "model": "Weather Data",
-            "sw_version": "0.1.0",
-        }
+        self._attr_device_info = _common_device_info(
+            entry, "summary", "Rainradar", "Weather Data"
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and self.coordinator.data is not None
 
     @property
     def native_value(self):
@@ -156,23 +175,26 @@ class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
         if not data:
             return None
         radar_frames = data.get("radar_frames") or {}
-        return len(radar_frames.get("past", [])) + len(radar_frames.get("nowcast", [])) + len(radar_frames.get("forecast", []))
+        return (
+            len(radar_frames.get("past", []))
+            + len(radar_frames.get("nowcast", []))
+            + len(radar_frames.get("forecast", []))
+        )
 
     @property
     def extra_state_attributes(self) -> dict | None:
         data = self.coordinator.data
         if not data:
             return None
-        radar_frames = data.get("radar_frames") or {}
         return {
-            "past": radar_frames.get("past", []),
-            "nowcast": radar_frames.get("nowcast", []),
-            "forecast": radar_frames.get("forecast", []),
+            "frames": data.get("radar_frames") or {},
             "last_update": data.get("last_update"),
         }
 
 
 class RainradarStationsSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
     def __init__(
         self,
         coordinator: RainradarCoordinator,
@@ -182,13 +204,13 @@ class RainradarStationsSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{DOMAIN}_stations"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, f"{entry.entry_id}_summary")},
-            "name": "Rainradar",
-            "manufacturer": "DWD",
-            "model": "Weather Data",
-            "sw_version": "0.1.0",
-        }
+        self._attr_device_info = _common_device_info(
+            entry, "summary", "Rainradar", "Weather Data"
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and self.coordinator.data is not None
 
     @property
     def native_value(self):
@@ -204,11 +226,20 @@ class RainradarStationsSensor(CoordinatorEntity, SensorEntity):
             return None
         stations = []
         for station in self.coordinator.stations:
-            stations.append([station.lat, station.lon, None, None])
+            stations.append(
+                {
+                    "id": station.station_id,
+                    "name": station.name,
+                    "lat": station.lat,
+                    "lon": station.lon,
+                }
+            )
         return {"stations": stations}
 
 
 class RainradarSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
     def __init__(
         self,
         coordinator: RainradarCoordinator,
@@ -227,13 +258,16 @@ class RainradarSensor(CoordinatorEntity, SensorEntity):
         self._sensor_key = sensor_key
         self.entity_description = description
         self._attr_unique_id = f"{DOMAIN}_{safe_name}_{sensor_key}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, f"{entry.entry_id}_{safe_name}")},
-            "name": f"Rainradar {loc_name}",
-            "manufacturer": "DWD",
-            "model": "Weather Station",
-            "sw_version": "0.1.0",
-        }
+        self._attr_device_info = _common_device_info(
+            entry, safe_name, f"Rainradar {loc_name}", "Weather Station"
+        )
+
+    @property
+    def available(self) -> bool:
+        if not (self.coordinator.last_update_success and self.coordinator.data):
+            return False
+        return self._sensor_key in (self.coordinator.data.get("locations", {})
+                                     .get(self._loc_key) or {})
 
     @property
     def native_value(self):
@@ -258,6 +292,4 @@ class RainradarSensor(CoordinatorEntity, SensorEntity):
             "station_id": loc_data.get("station_id"),
             "source_entity": loc_data.get("source_entity"),
         }
-        if self._sensor_key == "condition":
-            attrs["icon"] = loc_data.get("icon")
         return {k: v for k, v in attrs.items() if v is not None}

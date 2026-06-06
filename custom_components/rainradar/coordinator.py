@@ -4,8 +4,11 @@ import asyncio
 import csv
 import io
 import logging
+import os
 import zipfile
 from datetime import timedelta, datetime, timezone
+from pathlib import Path
+from urllib.parse import quote
 
 import aiohttp
 
@@ -26,6 +29,22 @@ from .const import (
     CONF_TRACKED_LOCATION_NAME,
     DEFAULT_SCAN_INTERVAL,
     DWD_OPENDATA,
+    DWD_WMS_BASE,
+    DWD_WMS_RADAR_LAYER,
+    DWD_WMS_RADAR_STYLE,
+    DWD_WMS_FORECAST_LAYER,
+    DWD_WMS_FORECAST_STYLE,
+    DWD_WMS_VERSION,
+    RADAR_BBOX,
+    RADAR_IMG_WIDTH,
+    RADAR_IMG_HEIGHT,
+    PAST_FRAMES,
+    NOWCAST_FRAMES,
+    FORECAST_FRAMES,
+    FRAME_INTERVAL_MIN,
+    frames_cache_dir,
+    frames_url_prefix,
+    safe_frame_filename,
 )
 from .station_mapping import fetch_stations, find_nearest_station, DWDStation
 
@@ -36,14 +55,6 @@ CDC_PRODUCTS = {
     "TU": ("air_temperature/recent", ["TT_TU", "RF_TU"], ["temperature", "humidity"]),
     "FF": ("wind/recent", ["F", "D"], ["wind_speed", "wind_direction"]),
     "RR": ("precipitation/recent", ["R1"], ["precipitation"]),
-}
-CDC_ICON_MAP = {
-    "sunny": "mdi:weather-sunny",
-    "partlycloudy": "mdi:weather-partly-cloudy",
-    "cloudy": "mdi:weather-cloudy",
-    "fog": "mdi:weather-fog",
-    "rainy": "mdi:weather-rainy",
-    "snowy": "mdi:weather-snowy",
 }
 
 CONDITION_FROM_TEMP = [
@@ -58,6 +69,7 @@ CONDITION_FROM_TEMP = [
 class RainradarCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.entry = entry
+        self.hass = hass
         self.locations: list[dict] = entry.options.get(CONF_LOCATIONS, [])
         scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
 
@@ -69,8 +81,10 @@ class RainradarCoordinator(DataUpdateCoordinator):
         )
 
         self.stations: list[DWDStation] = []
-        self.radar_frames: dict[str, list[str]] = {}
         self._session = aiohttp.ClientSession()
+        self._frame_generation = 0
+        self._cache_dir: Path = frames_cache_dir(hass.config.path(""), entry.entry_id)
+        self._url_prefix: str = frames_url_prefix(entry.entry_id)
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -78,13 +92,8 @@ class RainradarCoordinator(DataUpdateCoordinator):
 
     @staticmethod
     def _normalize_entity_list(value: object) -> list[str]:
-        if value is None:
-            return []
-        if isinstance(value, str):
-            return [value]
-        if isinstance(value, list):
-            return [item for item in value if isinstance(item, str)]
-        return []
+        from .const import normalize_entity_list
+        return normalize_entity_list(value)
 
     async def _get_zip_text(self, product: str, station_id: str) -> str | None:
         path, _, _ = CDC_PRODUCTS[product]
@@ -151,23 +160,133 @@ class RainradarCoordinator(DataUpdateCoordinator):
             for threshold, cond in CONDITION_FROM_TEMP:
                 if t >= threshold:
                     result["condition"] = cond
-                    result["icon"] = CDC_ICON_MAP.get(cond, "mdi:weather-cloudy")
                     break
         return result
 
-    def _generate_radar_frames(self) -> dict[str, list[str]]:
+    def _generate_radar_timestamps(self) -> dict[str, list[str]]:
         now = datetime.now(timezone.utc)
         radar: list[str] = []
+        for i in range(PAST_FRAMES, 0, -1):
+            radar.append(
+                (now - timedelta(minutes=FRAME_INTERVAL_MIN * i)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+            )
+        for i in range(NOWCAST_FRAMES):
+            radar.append(
+                (now + timedelta(minutes=FRAME_INTERVAL_MIN * i)).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+            )
         forecast: list[str] = []
+        for i in range(FORECAST_FRAMES):
+            forecast.append(
+                (now + timedelta(hours=i)).strftime("%Y-%m-%dT%H:00:00Z")
+            )
+        return {"past": radar[:PAST_FRAMES], "nowcast": radar[PAST_FRAMES:], "forecast": forecast}
 
-        for i in range(24, 0, -1):
-            radar.append((now - timedelta(minutes=5 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"))
-        for i in range(24):
-            radar.append((now + timedelta(minutes=5 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"))
-        for i in range(14):
-            forecast.append((now + timedelta(hours=1 * i)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    def _wms_url(self, layer: str, style: str, timestamp: str) -> str:
+        ts = quote(timestamp, safe="")
+        return (
+            f"{DWD_WMS_BASE}?service=WMS&version={DWD_WMS_VERSION}"
+            f"&request=GetMap&layers={layer}&styles={style}"
+            f"&bbox={RADAR_BBOX}&width={RADAR_IMG_WIDTH}&height={RADAR_IMG_HEIGHT}"
+            f"&format=image/png&srs=EPSG:4326&time={ts}"
+        )
 
-        return {"past": radar[:24], "nowcast": radar[24:], "forecast": forecast}
+    def _frame_path(self, layer: str, timestamp: str) -> Path:
+        return self._cache_dir / layer / safe_frame_filename(timestamp)
+
+    def _frame_url(self, layer: str, timestamp: str) -> str:
+        return f"{self._url_prefix}/{layer}/{safe_frame_filename(timestamp)}"
+
+    async def _download_frame(
+        self, layer: str, style: str, timestamp: str, sem: asyncio.Semaphore
+    ) -> tuple[str, str, bool]:
+        path = self._frame_path(layer, timestamp)
+        if path.is_file():
+            return (layer, timestamp, True)
+        url = self._wms_url(layer, style, timestamp)
+        try:
+            async with sem:
+                async with asyncio.timeout(30):
+                    async with self.session.get(url) as resp:
+                        if resp.status != 200:
+                            _LOGGER.debug(
+                                "Frame fetch %s @ %s returned %s", layer, timestamp, resp.status
+                            )
+                            return (layer, timestamp, False)
+                        data = await resp.read()
+            await asyncio.to_thread(self._write_frame, path, data)
+            return (layer, timestamp, True)
+        except Exception as exc:
+            _LOGGER.debug("Frame fetch failed %s @ %s: %s", layer, timestamp, exc)
+            return (layer, timestamp, False)
+
+    @staticmethod
+    def _write_frame(path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+
+    async def _prefetch_frames(self, frames: dict[str, list[str]]) -> dict[str, list[dict]]:
+        sem = asyncio.Semaphore(4)
+        tasks = []
+        for ts in frames.get("past", []):
+            tasks.append(
+                self._download_frame(DWD_WMS_RADAR_LAYER, DWD_WMS_RADAR_STYLE, ts, sem)
+            )
+        for ts in frames.get("nowcast", []):
+            tasks.append(
+                self._download_frame(DWD_WMS_RADAR_LAYER, DWD_WMS_RADAR_STYLE, ts, sem)
+            )
+        for ts in frames.get("forecast", []):
+            tasks.append(
+                self._download_frame(
+                    DWD_WMS_FORECAST_LAYER, DWD_WMS_FORECAST_STYLE, ts, sem
+                )
+            )
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+        result: dict[str, list[dict]] = {}
+        for kind in ("past", "nowcast"):
+            entries = []
+            for ts in frames.get(kind, []):
+                path = self._frame_path(DWD_WMS_RADAR_LAYER, ts)
+                if path.is_file():
+                    entries.append(
+                        {"ts": ts, "url": self._frame_url(DWD_WMS_RADAR_LAYER, ts)}
+                    )
+            result[kind] = entries
+        forecast_entries = []
+        for ts in frames.get("forecast", []):
+            path = self._frame_path(DWD_WMS_FORECAST_LAYER, ts)
+            if path.is_file():
+                forecast_entries.append(
+                    {"ts": ts, "url": self._frame_url(DWD_WMS_FORECAST_LAYER, ts)}
+                )
+        result["forecast"] = forecast_entries
+        return result
+
+    async def _evict_old_frames(self) -> None:
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
+        for layer_dir in self._cache_dir.iterdir() if self._cache_dir.exists() else []:
+            if not layer_dir.is_dir():
+                continue
+            for f in layer_dir.iterdir():
+                if not f.is_file() or not f.name.endswith(".png"):
+                    continue
+                ts_part = f.stem.split("T")[0]
+                try:
+                    file_dt = datetime.strptime(ts_part, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                if file_dt < cutoff:
+                    try:
+                        f.unlink()
+                    except OSError:
+                        pass
 
     async def _async_update_data(self) -> dict:
         try:
@@ -238,7 +357,10 @@ class RainradarCoordinator(DataUpdateCoordinator):
             for sid, task in obs_tasks.items():
                 obs_results[sid] = await task
 
-            self.radar_frames = self._generate_radar_frames()
+            self._frame_generation += 1
+            frame_ts = self._generate_radar_timestamps()
+            frame_urls = await self._prefetch_frames(frame_ts)
+            await self._evict_old_frames()
 
             result: dict[str, dict] = {}
             for loc_key, (loc_name, source_entity, station) in station_map.items():
@@ -254,7 +376,7 @@ class RainradarCoordinator(DataUpdateCoordinator):
 
             return {
                 "locations": result,
-                "radar_frames": self.radar_frames,
+                "radar_frames": frame_urls,
                 "stations_count": len(self.stations),
                 "last_update": datetime.now(timezone.utc).isoformat(),
             }

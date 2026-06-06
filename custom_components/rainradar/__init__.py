@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -27,7 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     coordinator = RainradarCoordinator(hass, entry)
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    _register_frames_path(hass, entry.entry_id)
+    await _register_frames_path(hass, entry.entry_id)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     try:
@@ -106,7 +107,7 @@ async def _register_card(hass: HomeAssistant) -> None:
     )
 
 
-def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
+async def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
     """Register a per-entry static path for prefetched radar frame PNGs."""
     registered = hass.data.setdefault(_FRAMES_PATH_REGISTERED_KEY, set())
     if entry_id in registered:
@@ -114,13 +115,15 @@ def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
     registered.add(entry_id)
 
     cache_dir = frames_cache_dir(hass.config.path(""), entry_id)
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    # mkdir is a blocking syscall; offload to a thread so the event loop
+    # stays responsive on the first setup of an integration.
+    await asyncio.to_thread(cache_dir.mkdir, parents=True, exist_ok=True)
     url = frames_url_prefix(entry_id)
 
     if hasattr(hass.http, "async_register_static_paths"):
         from homeassistant.components.http import StaticPathConfig
 
-        hass.http.async_register_static_paths(
+        await hass.http.async_register_static_paths(
             [StaticPathConfig(url, str(cache_dir), cache_headers=False)]
         )
     else:

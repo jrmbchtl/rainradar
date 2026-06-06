@@ -225,17 +225,23 @@ class RainradarStationsSensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data
         if not data:
             return None
-        stations = []
-        for station in self.coordinator.stations:
-            stations.append(
-                {
-                    "id": station.station_id,
-                    "name": station.name,
-                    "lat": station.lat,
-                    "lon": station.lon,
-                }
-            )
-        return {"stations": stations}
+        # Keep payload compact: HA caps sensor attribute state at 16 KiB
+        # in the recorder. We send {lat, lon} per station; the card can
+        # use the lat/lon for the marker and show coordinates in the
+        # tooltip. Names are exposed separately in `station_names` and
+        # truncated to a safe budget.
+        stations: list[dict[str, float]] = []
+        names: dict[str, str] = {}
+        name_budget = 4096
+        for i, station in enumerate(self.coordinator.stations):
+            stations.append({"lat": station.lat, "lon": station.lon})
+            if name_budget > 0:
+                truncated = station.name[:32]
+                entry_size = len(truncated) + 8
+                if entry_size <= name_budget:
+                    names[str(i)] = truncated
+                    name_budget -= entry_size
+        return {"stations": stations, "station_names": names}
 
 
 class RainradarSensor(CoordinatorEntity, SensorEntity):

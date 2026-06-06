@@ -320,6 +320,9 @@ class RainradarCoordinator(DataUpdateCoordinator):
         return result
 
     async def _evict_old_frames(self) -> None:
+        await asyncio.to_thread(self._evict_old_frames_sync)
+
+    def _evict_old_frames_sync(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
         if not self._cache_dir.exists():
             return

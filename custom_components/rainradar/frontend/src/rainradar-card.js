@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.3.0-rc1";
+const CARD_VERSION = "0.3.0-rc2";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -36,7 +36,8 @@ const _isDebugFromUrl = () => {
 };
 
 const _dlog = (tag, ...args) => {
-  // Console log with a consistent prefix and tag. Opt in via ?debug=1.
+  // Console log with a consistent prefix and tag. Opt in via ?debug=1
+  // (URL or localStorage["rainradar_debug"] = "1").
   if (typeof window === "undefined" || !window.__RAINRADAR_DEBUG) return;
   try {
     // eslint-disable-next-line no-console
@@ -45,6 +46,24 @@ const _dlog = (tag, ...args) => {
     // ignore
   }
 };
+
+const _dwarn = (tag, ...args) => {
+  // Always-on warn-level log so we leave a trace in the console even when
+  // ?debug=1 is not set. Used sparingly for things the user must see
+  // (e.g. the module being loaded, the version).
+  try {
+    // eslint-disable-next-line no-console
+    console.warn(`[rainradar ${tag}]`, ...args);
+  } catch (e) {
+    // ignore
+  }
+};
+
+if (typeof window !== "undefined") {
+  window.__RAINRADAR_DEBUG = _isDebugFromUrl();
+  // Always-on breadcrumb so we can confirm the new bundle loaded.
+  _dwarn("load", `rainradar-card.js v${CARD_VERSION} loaded; debug=${window.__RAINRADAR_DEBUG}`);
+}
 
 class RainradarCard extends LitElement {
   static properties = {
@@ -445,10 +464,12 @@ class RainradarCard extends LitElement {
     if (!stations.length) return;
 
     const bounds = this._map.getBounds();
-    for (const s of stations) {
-      if (!s || typeof s.lat !== "number" || typeof s.lon !== "number") continue;
-      if (!bounds.contains([s.lat, s.lon])) continue;
-      const tooltip = s.name ? `${s.name}` : "";
+    const sensorState = this.hass?.states?.["sensor.rainradar_stations"];
+    const nameMap = sensorState?.attributes?.station_names || {};
+    stations.forEach((s, i) => {
+      if (!s || typeof s.lat !== "number" || typeof s.lon !== "number") return;
+      if (!bounds.contains([s.lat, s.lon])) return;
+      const label = nameMap[String(i)] || s.name || `${s.lat.toFixed(2)},${s.lon.toFixed(2)}`;
       const marker = L.circleMarker([s.lat, s.lon], {
         radius: 3,
         color: "#03a9f4",
@@ -456,10 +477,10 @@ class RainradarCard extends LitElement {
         fillOpacity: 0.6,
         weight: 1,
       })
-        .bindTooltip(tooltip, { direction: "top", offset: [0, -4] })
+        .bindTooltip(label, { direction: "top", offset: [0, -4] })
         .addTo(this._map);
       this._stationMarkers.push(marker);
-    }
+    });
   }
 
   _loadLeafletCSS() {

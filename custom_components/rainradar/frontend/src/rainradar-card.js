@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.5.1";
+const CARD_VERSION = "0.5.2";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -453,7 +453,9 @@ class RainradarCard extends LitElement {
     let best = 0;
     let bestDiff = Infinity;
     for (let i = 0; i < this._frames.length; i++) {
-      const diff = Math.abs(this._frames[i].ts - now);
+      const ts = this._frames[i].ts;
+      const t = typeof ts === "number" ? ts : new Date(ts).getTime();
+      const diff = Math.abs(t - now);
       if (diff < bestDiff) {
         bestDiff = diff;
         best = i;

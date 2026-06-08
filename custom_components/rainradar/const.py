@@ -48,7 +48,7 @@ DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.5.1"
+INTEGRATION_VERSION = "0.5.2"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -124,7 +124,7 @@ SENSOR_TYPES = {
         "unit": "°",
         "icon": "mdi:compass",
         "device_class": "wind_direction",
-        "state_class": "measurement",
+        "state_class": "measurement_angle",
     },
     "wind_gust": {
         "unit": "km/h",

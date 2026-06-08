@@ -561,7 +561,7 @@ class RainradarCoordinator(DataUpdateCoordinator):
             for sid, task in daily_tasks.items():
                 daily_results[sid] = await task
 
-            frame_ts = self._generate_radar_timestamps()
+            frame_ts = await self._generate_radar_timestamps()
             frame_urls = await self._prefetch_frames(frame_ts)
             await self._evict_old_frames()
 

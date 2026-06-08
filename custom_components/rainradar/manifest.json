@@ -15,6 +15,6 @@
     "cfgrib>=0.9.11",
     "xarray>=2023.1"
   ],
-  "version": "0.5.0",
+  "version": "0.5.1",
   "loggers": ["custom_components.rainradar"]
 }

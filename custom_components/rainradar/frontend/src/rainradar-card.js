@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.5.3";
+const CARD_VERSION = "0.5.4";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -428,23 +428,23 @@ class RainradarCard extends LitElement {
       return;
     }
 
-    this._rotateFromNow();
+    const nowIdx = this._nowIndex();
 
     if (!this._overlay) {
-      _dlog("overlay", "create", { url: this._frames[0].url, bounds: RADAR_BOUNDS });
+      _dlog("overlay", "create", { url: this._frames[nowIdx].url, bounds: RADAR_BOUNDS });
       this._overlay = L.imageOverlay(
-        this._frames[0].url,
+        this._frames[nowIdx].url,
         RADAR_BOUNDS,
         { opacity: 0.7, interactive: false, crossOrigin: false }
       ).addTo(this._map);
       this._overlay.on("load", () => _dlog("overlay", "image loaded", this._overlay?._url));
       this._overlay.on("error", (ev) => _dlog("overlay", "image error", ev));
     } else {
-      _dlog("overlay", "setUrl", this._frames[0].url);
-      this._overlay.setUrl(this._frames[0].url);
+      _dlog("overlay", "setUrl", this._frames[nowIdx].url);
+      this._overlay.setUrl(this._frames[nowIdx].url);
     }
 
-    this._showFrame(0);
+    this._showFrame(nowIdx);
     this.requestUpdate();
   }
 
@@ -462,12 +462,6 @@ class RainradarCard extends LitElement {
       }
     }
     return best;
-  }
-
-  _rotateFromNow() {
-    const nowIdx = this._nowIndex();
-    if (nowIdx === 0 || nowIdx >= this._frames.length) return;
-    this._frames = [...this._frames.slice(nowIdx), ...this._frames.slice(0, nowIdx)];
   }
 
   _showFrame(idx) {

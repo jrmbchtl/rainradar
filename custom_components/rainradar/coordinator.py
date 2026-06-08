@@ -8,7 +8,6 @@ import os
 import zipfile
 from datetime import timedelta, datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
 
 import aiohttp
 
@@ -27,40 +26,42 @@ from .const import (
     CONF_DEVICE_TRACKERS,
     CONF_ZONES,
     CONF_TRACKED_LOCATION_NAME,
+    CONF_ENABLE_FORECAST,
+    CONF_ENABLE_RADOLAN,
+    CONF_ENABLE_ICON_EU,
+    CONF_ENABLE_UV,
     DEFAULT_SCAN_INTERVAL,
     DWD_OPENDATA,
-    DWD_WMS_BASE,
-    DWD_WMS_RADAR_LAYER,
-    DWD_WMS_RADAR_STYLE,
-    DWD_WMS_VERSION,
+    DWD_CDC_HOURLY,
+    DWD_CDC_10MIN,
+    DWD_CDC_DAILY,
     RADAR_BBOX_MERCATOR,
     RADAR_IMG_WIDTH,
     RADAR_IMG_HEIGHT,
     PAST_FRAMES,
     NOWCAST_FRAMES,
     FRAME_INTERVAL_MIN,
+    DWD_WMS_RADAR_LAYER,
+    DWD_WMS_RADAR_STYLE,
+    DWD_WMS_VERSION,
     frames_cache_dir,
     frames_url_prefix,
     safe_frame_filename,
+    normalize_entity_list,
+    apparent_temperature,
+    condition_from_dwd_ww,
+    CDC_10MIN_PRODUCTS,
+    CDC_10MIN_FILENAMES,
+    CDC_HOURLY_PRODUCTS,
+    CDC_DAILY_PRODUCTS,
 )
 from .station_mapping import fetch_stations, find_nearest_station, DWDStation
+from .mosmix import fetch_mosmix_forecast
+from .radolan import fetch_radolan_grid, get_radolan_value
+from .iconeu import fetch_icon_eu_precip
+from .openmeteo import fetch_uv_index
 
 _LOGGER = logging.getLogger(__name__)
-
-CDC_BASE = f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/hourly"
-CDC_PRODUCTS = {
-    "TU": ("air_temperature/recent", ["TT_TU", "RF_TU"], ["temperature", "humidity"]),
-    "FF": ("wind/recent", ["F", "D"], ["wind_speed", "wind_direction"]),
-    "RR": ("precipitation/recent", ["R1"], ["precipitation"]),
-}
-
-CONDITION_FROM_TEMP = [
-    (20, "sunny"),
-    (10, "partlycloudy"),
-    (5, "cloudy"),
-    (-10, "fog"),
-    (-99, "fog"),
-]
 
 
 class RainradarCoordinator(DataUpdateCoordinator):
@@ -69,6 +70,10 @@ class RainradarCoordinator(DataUpdateCoordinator):
         self.hass = hass
         self.locations: list[dict] = entry.options.get(CONF_LOCATIONS, [])
         scan_interval = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        self.enable_forecast = entry.options.get(CONF_ENABLE_FORECAST, True)
+        self.enable_radolan = entry.options.get(CONF_ENABLE_RADOLAN, True)
+        self.enable_icon_eu = entry.options.get(CONF_ENABLE_ICON_EU, True)
+        self.enable_uv = entry.options.get(CONF_ENABLE_UV, True)
 
         super().__init__(
             hass,
@@ -82,22 +87,17 @@ class RainradarCoordinator(DataUpdateCoordinator):
         self._cache_dir: Path = frames_cache_dir(hass.config.path(""), entry.entry_id)
         self._url_prefix: str = frames_url_prefix(entry.entry_id)
         self._last_frame_error: str | None = None
-        # Track whether we've already walked the cache dir to neutralise
-        # any frames that were downloaded before PIL was wired up. The
-        # pass is idempotent but costs a few seconds per frame, so we run
-        # it exactly once per coordinator instance.
         self._cache_reprocessed = False
-        try:
-            from PIL import Image  # noqa: F401
+        self._radolan_grid = None
+        self._radolan_last_update: float = 0
+        self._mosmix_cache: dict[str, list[dict]] = {}
+        self._mosmix_last_update: float = 0
 
+        try:
+            from PIL import Image
             self._pil_available = True
         except ImportError:
             self._pil_available = False
-            _LOGGER.warning(
-                "Rainradar: Pillow is not importable; frame PNGs will not "
-                "be neutralized. Install Pillow (pip install Pillow) in the "
-                "Home Assistant environment for transparent radar backgrounds."
-            )
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -108,14 +108,12 @@ class RainradarCoordinator(DataUpdateCoordinator):
         from .const import normalize_entity_list
         return normalize_entity_list(value)
 
-    async def _get_zip_text(self, product: str, station_id: str) -> str | None:
-        path, _, _ = CDC_PRODUCTS[product]
-        url = f"{CDC_BASE}/{path}/stundenwerte_{product}_{station_id}_akt.zip"
+    async def _get_zip_text(self, base_url: str, path: str, filename: str) -> str | None:
+        url = f"{base_url}/{path}/{filename}"
         try:
             async with asyncio.timeout(15):
                 async with self.session.get(url) as resp:
                     if resp.status != 200:
-                        _LOGGER.debug("No %s data for station %s", product, station_id)
                         return None
                     raw = await resp.read()
             with zipfile.ZipFile(io.BytesIO(raw)) as zf:
@@ -129,21 +127,38 @@ class RainradarCoordinator(DataUpdateCoordinator):
                                 continue
                         return raw_text.decode("utf-8", errors="replace")
             return None
-        except Exception as exc:
-            _LOGGER.debug("Failed to fetch %s for %s: %s", product, station_id, exc)
+        except Exception:
             return None
+
+    async def _fetch_product(
+        self, station_id: str, product: str, source: str = "auto"
+    ) -> tuple[list[str], list[str], str | None]:
+        """Fetch a CDC product. source: auto/10min/hourly."""
+        if source == "auto" or source == "10min":
+            if product in CDC_10MIN_PRODUCTS:
+                path_10, cols_10, keys_10 = CDC_10MIN_PRODUCTS[product]
+                filename = CDC_10MIN_FILENAMES[product].format(station_id=station_id)
+                text = await self._get_zip_text(DWD_CDC_10MIN, path_10, filename)
+                if text is not None:
+                    return cols_10, keys_10, text
+
+        if source == "auto" or source == "hourly":
+            if product in CDC_HOURLY_PRODUCTS:
+                path_h, cols_h, keys_h = CDC_HOURLY_PRODUCTS[product]
+                filename = f"stundenwerte_{product}_{station_id}_akt.zip"
+                text = await self._get_zip_text(DWD_CDC_HOURLY, path_h, filename)
+                if text is not None:
+                    return cols_h, keys_h, text
+
+        return [], [], None
 
     async def _fetch_obs(self, station_id: str) -> dict:
         result: dict = {}
-        tasks = {}
-        for prod in CDC_PRODUCTS:
-            tasks[prod] = asyncio.create_task(self._get_zip_text(prod, station_id))
 
-        for prod, task in tasks.items():
-            text = await task
+        for product in ("TU", "FF", "RR"):
+            cols, keys, text = await self._fetch_product(station_id, product)
             if text is None:
                 continue
-            _, csv_cols, result_keys = CDC_PRODUCTS[prod]
             try:
                 lines = text.strip().split("\n")
                 if len(lines) < 2:
@@ -151,9 +166,11 @@ class RainradarCoordinator(DataUpdateCoordinator):
                 header = lines[0]
                 data_lines = lines[1:]
                 header_cols = [c.strip() for c in header.split(";")]
-                idxs = [header_cols.index(c) for c in csv_cols]
+                idxs = [header_cols.index(c) for c in cols if c in header_cols]
+                used_cols = [c for c in cols if c in header_cols]
+                used_keys = keys[:len(idxs)]
                 last = data_lines[-1].split(";")
-                for idx_field, result_key in zip(idxs, result_keys):
+                for idx_field, result_key in zip(idxs, used_keys):
                     if idx_field >= len(last):
                         continue
                     val = last[idx_field].strip()
@@ -163,30 +180,97 @@ class RainradarCoordinator(DataUpdateCoordinator):
                         except (ValueError, TypeError):
                             pass
             except Exception as exc:
-                _LOGGER.debug("Parse error for %s: %s", prod, exc)
+                _LOGGER.debug("Parse error for %s: %s", product, exc)
+
+        for product in ("DD", "CO"):
+            if product not in CDC_HOURLY_PRODUCTS:
+                continue
+            path_h, cols_h, keys_h = CDC_HOURLY_PRODUCTS[product]
+            filename = f"stundenwerte_{product}_{station_id}_akt.zip"
+            text = await self._get_zip_text(DWD_CDC_HOURLY, path_h, filename)
+            if text is None:
+                continue
+            try:
+                lines = text.strip().split("\n")
+                if len(lines) < 2:
+                    continue
+                header = lines[0]
+                header_cols = [c.strip() for c in header.split(";")]
+                for col, key in zip(cols_h, keys_h):
+                    if col in header_cols:
+                        idx = header_cols.index(col)
+                        last = lines[-1].split(";")
+                        if idx < len(last):
+                            val = last[idx].strip()
+                            if val and val not in ("-999", "999.0", "-999.0"):
+                                try:
+                                    result[key] = round(float(val), 1)
+                                except (ValueError, TypeError):
+                                    pass
+            except Exception as exc:
+                _LOGGER.debug("Parse error for %s: %s", product, exc)
 
         if "wind_speed" in result:
             result["wind_speed"] = round(result["wind_speed"] * 3.6, 1)
+        if "precipitation" in result:
+            result["precip_intensity"] = result["precipitation"]
 
         if "temperature" in result:
             t = result["temperature"]
-            for threshold, cond in CONDITION_FROM_TEMP:
-                if t >= threshold:
-                    result["condition"] = cond
-                    break
+            result["condition"] = condition_from_dwd_ww(None)
+            if "humidity" in result and "wind_speed" in result:
+                result["apparent_temperature"] = apparent_temperature(
+                    t, result["humidity"], result["wind_speed"]
+                )
+
         return result
 
-    def _generate_radar_timestamps(self) -> dict[str, list[str]]:
-        # DWD WMS only serves frames on 5-minute boundaries. Arbitrary
-        # seconds cause the WMS to return HTTP 200 with an
-        # InvalidDimensionValue XML body, which silently broke fetching.
-        # The ICON-D2 forecast layer (hourly, 14h) was removed in
-        # 0.3.8: its 1-hour cadence couldn't replace the 5-min nowcast
-        # without losing resolution, and starting it at top-of-current-
-        # hour made the timeline "jump back" from ~now+2h to ~now+0h.
-        # User feedback was that data past ~2h ahead is not precise
-        # enough to be useful anyway, so the card now shows past+nowcast
-        # only (48 frames, 2h past + 2h nowcast).
+    async def _fetch_daily_data(self, station_id: str) -> dict:
+        result: dict = {}
+        for product, (path, cols, keys) in CDC_DAILY_PRODUCTS.items():
+            filename = f"tageswerte_{product}_{station_id}_akt.zip"
+            text = await self._get_zip_text(DWD_CDC_DAILY, path, filename)
+            if text is None:
+                continue
+            try:
+                lines = text.strip().split("\n")
+                if len(lines) < 2:
+                    continue
+                header = lines[0]
+                header_cols = [c.strip() for c in header.split(";")]
+                last = lines[-1].split(";")
+                for col, key in zip(cols, keys):
+                    if col in header_cols:
+                        idx = header_cols.index(col)
+                        if idx < len(last):
+                            val = last[idx].strip()
+                            if val and val not in ("-999", "999.0", "-999.0"):
+                                try:
+                                    result[key] = round(float(val), 1)
+                                except (ValueError, TypeError):
+                                    pass
+            except Exception as exc:
+                _LOGGER.debug("Daily parse error for %s: %s", product, exc)
+        return result
+
+    async def _fetch_mosmix(self, station_id: str) -> list[dict] | None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if station_id in self._mosmix_cache and (now_ts - self._mosmix_last_update) < 3600:
+            return self._mosmix_cache[station_id]
+        forecast = await fetch_mosmix_forecast(self._session, station_id)
+        if forecast is not None:
+            self._mosmix_cache[station_id] = forecast
+            self._mosmix_last_update = now_ts
+        return forecast
+
+    async def _fetch_radolan_for_location(self, lat: float, lon: float) -> float | None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        if self._radolan_grid is None or (now_ts - self._radolan_last_update) > 600:
+            self._radolan_grid = await fetch_radolan_grid(self._session)
+            self._radolan_last_update = now_ts
+        return get_radolan_value(self._radolan_grid, lat, lon)
+
+    async def _generate_radar_timestamps(self) -> dict[str, list[str]]:
         now = datetime.now(timezone.utc)
         now_radar = now.replace(minute=(now.minute // 5) * 5, second=0, microsecond=0)
         radar: list[str] = []
@@ -205,13 +289,10 @@ class RainradarCoordinator(DataUpdateCoordinator):
         return {"past": radar[:PAST_FRAMES], "nowcast": radar[PAST_FRAMES:]}
 
     def _wms_url(self, layer: str, style: str, timestamp: str) -> str:
+        from urllib.parse import quote
         ts = quote(timestamp, safe="")
-        # transparent=true makes the WMS itself return alpha=0 for "no
-        # data" pixels instead of an opaque white/grey background. The
-        # PIL pass still flattens "no rain" pixels (which the WMS keeps
-        # opaque) but the bulk of the bbox is now transparent server-side.
         return (
-            f"{DWD_WMS_BASE}?service=WMS&version={DWD_WMS_VERSION}"
+            f"https://maps.dwd.de/geoserver/dwd/ows?service=WMS&version={DWD_WMS_VERSION}"
             f"&request=GetMap&layers={layer}&styles={style}"
             f"&bbox={RADAR_BBOX_MERCATOR}&width={RADAR_IMG_WIDTH}&height={RADAR_IMG_HEIGHT}"
             f"&format=image/png&srs=EPSG:3857&time={ts}&transparent=true"
@@ -237,12 +318,9 @@ class RainradarCoordinator(DataUpdateCoordinator):
                         if resp.status != 200:
                             return (layer, timestamp, False, f"HTTP {resp.status}")
                         data = await resp.read()
-            # DWD returns HTTP 200 with an XML ServiceExceptionReport for
-            # out-of-cadence timestamps. A real PNG starts with the 8-byte
-            # signature 89 50 4E 47 0D 0A 1A 0A. Reject anything else.
             if len(data) < 8 or data[:8] != b"\x89PNG\r\n\x1a\n":
                 snippet = data[:200].decode("utf-8", errors="replace")
-                return (layer, timestamp, False, f"non-PNG response: {snippet[:120]}")
+                return (layer, timestamp, False, f"non-PNG: {snippet[:120]}")
             await asyncio.to_thread(self._write_frame, path, data)
             return (layer, timestamp, True, None)
         except asyncio.TimeoutError:
@@ -256,16 +334,6 @@ class RainradarCoordinator(DataUpdateCoordinator):
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_bytes(data)
         os.replace(tmp, path)
-        # Post-process: the DWD WMS renders "no data" (outside the German
-        # composite coverage) as opaque grey and "no rain" inside the
-        # coverage as opaque white. A Leaflet imageOverlay would then
-        # paint a grey rectangle + white cloud on top of the OSM basemap
-        # (the user reports a "white/opaque overlay that is distracting").
-        # A neutral pixel (R==G==B) is a good proxy for "no radar data
-        # here" — recolor it to transparent so the basemap shows through.
-        # Colored pixels (R!=G or G!=B) keep the DWD intensity ramp
-        # (cyan→green→yellow→red→magenta→blue). PIL is a HA core dep
-        # but we import lazily and skip silently if missing.
         RainradarCoordinator._neutralize_png_inplace(path)
 
     @staticmethod
@@ -338,20 +406,12 @@ class RainradarCoordinator(DataUpdateCoordinator):
         if total_requested > 0 and total_ok == 0:
             self._last_frame_error = first_error or "all frame fetches failed"
             _LOGGER.warning(
-                "Rainradar: 0/%d frames fetched. First error: %s | failure breakdown: %s",
-                total_requested,
-                first_error,
-                failure_counts,
+                "Rainradar: 0/%d frames fetched. First error: %s",
+                total_requested, first_error,
             )
         elif total_ok < total_requested:
             self._last_frame_error = (
                 f"{total_requested - total_ok}/{total_requested} frames failed; first: {first_error}"
-            )
-            _LOGGER.debug(
-                "Rainradar: %d/%d frames fetched successfully. First failure: %s",
-                total_ok,
-                total_requested,
-                first_error,
             )
         else:
             self._last_frame_error = None
@@ -362,12 +422,6 @@ class RainradarCoordinator(DataUpdateCoordinator):
         await asyncio.to_thread(self._evict_old_frames_sync)
 
     async def _reprocess_cache_once(self) -> None:
-        """Neutralize any pre-PIL frames left over from earlier versions.
-
-        The pass is idempotent (already-transparent pixels stay transparent)
-        so it's safe to run again, but each 1200x900 PNG takes ~1-2 s in
-        pure-Python PIL — we run it at most once per coordinator instance.
-        """
         if self._cache_reprocessed or not self._pil_available:
             self._cache_reprocessed = True
             return
@@ -386,15 +440,10 @@ class RainradarCoordinator(DataUpdateCoordinator):
                     if f.is_file() and f.name.endswith(".png"):
                         RainradarCoordinator._neutralize_png_inplace(f)
                         count += 1
-        except OSError as exc:
-            _LOGGER.debug("Cache reprocess walk failed: %s", exc)
+        except OSError:
             return
         if count:
-            _LOGGER.info(
-                "Rainradar: reprocessed %d cached frame(s) to neutralize "
-                "no-data pixels (one-shot, after PIL was wired up)",
-                count,
-            )
+            _LOGGER.info("Rainradar: reprocessed %d cached frames", count)
 
     def _evict_old_frames_sync(self) -> None:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
@@ -402,8 +451,7 @@ class RainradarCoordinator(DataUpdateCoordinator):
             return
         try:
             layer_dirs = list(self._cache_dir.iterdir())
-        except OSError as exc:
-            _LOGGER.debug("Frame cache dir not iterable: %s", exc)
+        except OSError:
             return
         for layer_dir in layer_dirs:
             if not layer_dir.is_dir():
@@ -415,14 +463,6 @@ class RainradarCoordinator(DataUpdateCoordinator):
             for f in files:
                 if not f.is_file() or not f.name.endswith(".png"):
                     continue
-                # Filenames are produced by safe_frame_filename() and
-                # look like 2026-06-06T16-20-00Z.png. Earlier revisions
-                # only parsed the YYYY-MM-DD prefix, which made every
-                # file dated "today" parse as today-midnight UTC. With a
-                # 6h cutoff that meant *every* frame for the current day
-                # got unlinked on the next coordinator update, producing
-                # 404s on URLs the sensor had just advertised. Parse the
-                # full timestamp; fall back to date-only for safety.
                 file_dt = None
                 for fmt in ("%Y-%m-%dT%H-%M-%SZ", "%Y-%m-%dT%H-%M-%S", "%Y-%m-%d"):
                     try:
@@ -440,27 +480,28 @@ class RainradarCoordinator(DataUpdateCoordinator):
 
     async def _async_update_data(self) -> dict:
         try:
-            # One-shot pass on the first update: any frames left over
-            # from a pre-PIL version get neutralised so the OSM basemap
-            # shows through (instead of the user seeing an opaque
-            # white/grey overlay for the next 6 h until eviction runs).
             await self._reprocess_cache_once()
 
             if not self.stations:
                 self.stations = await fetch_stations(self.session)
-                _LOGGER.info("Loaded %d DWD stations", len(self.stations))
 
-            station_map: dict[str, tuple[str, str, DWDStation]] = {}
             zone_entities = self._normalize_entity_list(self.entry.options.get(CONF_ZONES))
-            if not zone_entities:
-                for loc in self.locations:
-                    lat = loc.get(CONF_LATITUDE)
-                    lon = loc.get(CONF_LONGITUDE)
-                    if lat is not None and lon is not None:
-                        nearest = find_nearest_station(lat, lon, self.stations)
-                        if nearest is not None:
-                            loc_name = loc.get(CONF_NAME, "unknown")
-                            station_map[loc_name] = (loc_name, "manual", nearest)
+            tracker_entities = self._normalize_entity_list(
+                self.entry.options.get(CONF_DEVICE_TRACKERS)
+            )
+            if not tracker_entities:
+                tracker_entities = self._normalize_entity_list(
+                    self.entry.options.get(CONF_DEVICE_TRACKER)
+                )
+
+            location_specs: list[tuple[str, str, str, float, float]] = []
+
+            for loc in self.locations:
+                lat = loc.get(CONF_LATITUDE)
+                lon = loc.get(CONF_LONGITUDE)
+                name = loc.get(CONF_NAME, "unknown")
+                if lat is not None and lon is not None:
+                    location_specs.append((f"loc::{name}", name, "manual", float(lat), float(lon)))
 
             for zone_entity in zone_entities:
                 zone_state = self.hass.states.get(zone_entity)
@@ -470,21 +511,9 @@ class RainradarCoordinator(DataUpdateCoordinator):
                 zlon = zone_state.attributes.get(CONF_LONGITUDE)
                 if zlat is None or zlon is None:
                     continue
-                zone_name = zone_state.attributes.get("friendly_name", zone_entity)
-                znearest = find_nearest_station(float(zlat), float(zlon), self.stations)
-                if znearest is not None:
-                    station_map[f"zone::{zone_entity}"] = (
-                        zone_name,
-                        zone_entity,
-                        znearest,
-                    )
-
-            tracker_entities = self._normalize_entity_list(
-                self.entry.options.get(CONF_DEVICE_TRACKERS)
-            )
-            if not tracker_entities:
-                tracker_entities = self._normalize_entity_list(
-                    self.entry.options.get(CONF_DEVICE_TRACKER)
+                zname = zone_state.attributes.get("friendly_name", zone_entity)
+                location_specs.append(
+                    (f"zone::{zone_entity}", zname, zone_entity, float(zlat), float(zlon))
                 )
 
             for tracker_entity in tracker_entities:
@@ -494,43 +523,145 @@ class RainradarCoordinator(DataUpdateCoordinator):
                     tlon = tracker_state.attributes.get("longitude")
                     if tlat is not None and tlon is not None:
                         tname = tracker_state.attributes.get("friendly_name", tracker_entity)
-                        if not isinstance(tname, str):
-                            tname = self.entry.options.get(
-                                CONF_TRACKED_LOCATION_NAME,
-                                tracker_entity,
-                            )
-                        tnearest = find_nearest_station(tlat, tlon, self.stations)
-                        if tnearest is not None:
-                            station_map[f"tracker::{tracker_entity}"] = (
-                                tname,
-                                tracker_entity,
-                                tnearest,
-                            )
+                        location_specs.append(
+                            (f"tracker::{tracker_entity}", tname, tracker_entity, float(tlat), float(tlon))
+                        )
 
-            station_ids = list({entry[2].station_id for entry in station_map.values()})
-            obs_tasks = {sid: asyncio.create_task(self._fetch_obs(sid)) for sid in station_ids}
-            obs_results: dict[str, dict] = {}
-            for sid, task in obs_tasks.items():
-                obs_results[sid] = await task
+            result_locations: dict[str, dict] = {}
+            all_station_ids: set[str] = set()
 
-            frame_ts = self._generate_radar_timestamps()
-            frame_urls = await self._prefetch_frames(frame_ts)
-            await self._evict_old_frames()
-
-            result: dict[str, dict] = {}
-            for loc_key, (loc_name, source_entity, station) in station_map.items():
-                loc_data = obs_results.get(station.station_id, {})
-                result[loc_key] = {
+            for loc_key, loc_name, source_entity, lat, lon in location_specs:
+                station = find_nearest_station(lat, lon, self.stations)
+                if station is None:
+                    _LOGGER.warning("No station found for %s", loc_name)
+                    continue
+                all_station_ids.add(station.station_id)
+                result_locations[loc_key] = {
                     "location_name": loc_name,
                     "source_entity": source_entity,
                     "station_id": station.station_id,
                     "station_name": station.name,
                     "station_distance_km": station.distance_km,
-                    **loc_data,
+                    "latitude": lat,
+                    "longitude": lon,
                 }
 
+            obs_tasks = {
+                sid: asyncio.create_task(self._fetch_obs(sid))
+                for sid in all_station_ids
+            }
+            daily_tasks = {
+                sid: asyncio.create_task(self._fetch_daily_data(sid))
+                for sid in all_station_ids
+            }
+            obs_results: dict[str, dict] = {}
+            daily_results: dict[str, dict] = {}
+            for sid, task in obs_tasks.items():
+                obs_results[sid] = await task
+            for sid, task in daily_tasks.items():
+                daily_results[sid] = await task
+
+            frame_ts = self._generate_radar_timestamps()
+            frame_urls = await self._prefetch_frames(frame_ts)
+            await self._evict_old_frames()
+
+            radolan_tasks: dict[str, asyncio.Task] = {}
+            icon_tasks: dict[str, asyncio.Task] = {}
+            uv_tasks: dict[str, asyncio.Task] = {}
+            mosmix_tasks: dict[str, asyncio.Task] = {}
+
+            if self.enable_radolan:
+                for loc_key, _, _, lat, lon in location_specs:
+                    radolan_tasks[loc_key] = asyncio.create_task(
+                        self._fetch_radolan_for_location(lat, lon)
+                    )
+
+            if self.enable_icon_eu:
+                for loc_key, _, _, lat, lon in location_specs:
+                    icon_tasks[loc_key] = asyncio.create_task(
+                        fetch_icon_eu_precip(self._session, lat, lon)
+                    )
+
+            if self.enable_uv:
+                for loc_key, _, _, lat, lon in location_specs:
+                    uv_tasks[loc_key] = asyncio.create_task(
+                        fetch_uv_index(self._session, lat, lon)
+                    )
+
+            station_ids_by_loc: dict[str, str] = {}
+            for loc_key, _, _, lat, lon in location_specs:
+                station = find_nearest_station(lat, lon, self.stations)
+                if station:
+                    station_ids_by_loc[loc_key] = station.station_id
+
+            if self.enable_forecast:
+                unique_sids = set(station_ids_by_loc.values())
+                for sid in unique_sids:
+                    mosmix_tasks[sid] = asyncio.create_task(self._fetch_mosmix(sid))
+
+            radolan_results: dict[str, float | None] = {}
+            for loc_key, task in radolan_tasks.items():
+                try:
+                    radolan_results[loc_key] = await task
+                except Exception:
+                    radolan_results[loc_key] = None
+
+            icon_results: dict[str, dict | None] = {}
+            for loc_key, task in icon_tasks.items():
+                try:
+                    icon_results[loc_key] = await task
+                except Exception:
+                    icon_results[loc_key] = None
+
+            uv_results: dict[str, dict | None] = {}
+            for loc_key, task in uv_tasks.items():
+                try:
+                    uv_results[loc_key] = await task
+                except Exception:
+                    uv_results[loc_key] = None
+
+            mosmix_results: dict[str, list[dict] | None] = {}
+            for sid, task in mosmix_tasks.items():
+                try:
+                    mosmix_results[sid] = await task
+                except Exception:
+                    mosmix_results[sid] = None
+
+            for loc_key in result_locations:
+                sid = station_ids_by_loc.get(loc_key)
+                loc = result_locations[loc_key]
+                lat = loc["latitude"]
+                lon = loc["longitude"]
+
+                if sid and sid in obs_results:
+                    loc.update(obs_results[sid])
+                if sid and sid in daily_results:
+                    for k, v in daily_results[sid].items():
+                        if k not in loc or loc[k] is None:
+                            loc[k] = v
+
+                if loc_key in radolan_results and radolan_results[loc_key] is not None:
+                    loc["radolan_precipitation"] = radolan_results[loc_key]
+
+                icon_data = icon_results.get(loc_key)
+                if icon_data:
+                    loc.update(icon_data)
+
+                uv_data = uv_results.get(loc_key)
+                if uv_data:
+                    loc.update(uv_data)
+
+                if sid and sid in mosmix_results:
+                    forecast = mosmix_results[sid]
+                    if forecast:
+                        now_ts = datetime.now(timezone.utc).timestamp()
+                        loc["forecast"] = [
+                            fc for fc in forecast
+                            if fc.get("ts", 0) >= now_ts
+                        ][:48]
+
             return {
-                "locations": result,
+                "locations": result_locations,
                 "radar_frames": frame_urls,
                 "stations_count": len(self.stations),
                 "last_update": datetime.now(timezone.utc).isoformat(),

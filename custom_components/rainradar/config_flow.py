@@ -15,13 +15,17 @@ from .const import (
     CONF_DEVICE_TRACKER,
     CONF_DEVICE_TRACKERS,
     CONF_ZONES,
+    CONF_ENABLE_FORECAST,
+    CONF_ENABLE_RADOLAN,
+    CONF_ENABLE_ICON_EU,
+    CONF_ENABLE_UV,
     DEFAULT_SCAN_INTERVAL,
     normalize_entity_list,
 )
 
 
 class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    VERSION = 2
 
     def _get_default_zones(self) -> list[str]:
         if self.hass.states.get("zone.home") is not None:
@@ -40,11 +44,14 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_LOCATIONS: [],
                     CONF_ZONES: zone_entities,
                     CONF_DEVICE_TRACKERS: device_trackers,
-                    # Backward compatibility for previous single-tracker schema.
                     CONF_DEVICE_TRACKER: device_trackers[0] if device_trackers else None,
                     CONF_SCAN_INTERVAL: user_input.get(
                         CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                     ),
+                    CONF_ENABLE_FORECAST: user_input.get(CONF_ENABLE_FORECAST, True),
+                    CONF_ENABLE_RADOLAN: user_input.get(CONF_ENABLE_RADOLAN, True),
+                    CONF_ENABLE_ICON_EU: user_input.get(CONF_ENABLE_ICON_EU, True),
+                    CONF_ENABLE_UV: user_input.get(CONF_ENABLE_UV, True),
                 },
             )
 
@@ -63,6 +70,10 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(
                         CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
                     ): vol.All(vol.Coerce(int), vol.Range(min=60, max=3600)),
+                    vol.Optional(CONF_ENABLE_FORECAST, default=True): bool,
+                    vol.Optional(CONF_ENABLE_RADOLAN, default=True): bool,
+                    vol.Optional(CONF_ENABLE_ICON_EU, default=True): bool,
+                    vol.Optional(CONF_ENABLE_UV, default=True): bool,
                 }
             ),
         )
@@ -97,6 +108,11 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
             CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
         )
 
+        enable_forecast = self._config_entry.options.get(CONF_ENABLE_FORECAST, True)
+        enable_radolan = self._config_entry.options.get(CONF_ENABLE_RADOLAN, True)
+        enable_icon_eu = self._config_entry.options.get(CONF_ENABLE_ICON_EU, True)
+        enable_uv = self._config_entry.options.get(CONF_ENABLE_UV, True)
+
         if user_input is not None:
             zones = normalize_entity_list(user_input.get(CONF_ZONES))
             device_trackers = normalize_entity_list(user_input.get(CONF_DEVICE_TRACKERS))
@@ -111,6 +127,10 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
                     CONF_SCAN_INTERVAL: user_input.get(
                         CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                     ),
+                    CONF_ENABLE_FORECAST: user_input.get(CONF_ENABLE_FORECAST, enable_forecast),
+                    CONF_ENABLE_RADOLAN: user_input.get(CONF_ENABLE_RADOLAN, enable_radolan),
+                    CONF_ENABLE_ICON_EU: user_input.get(CONF_ENABLE_ICON_EU, enable_icon_eu),
+                    CONF_ENABLE_UV: user_input.get(CONF_ENABLE_UV, enable_uv),
                 },
             )
 
@@ -134,6 +154,10 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
                         CONF_SCAN_INTERVAL,
                         default=scan_interval,
                     ): vol.All(vol.Coerce(int), vol.Range(min=60, max=3600)),
+                    vol.Optional(CONF_ENABLE_FORECAST, default=enable_forecast): bool,
+                    vol.Optional(CONF_ENABLE_RADOLAN, default=enable_radolan): bool,
+                    vol.Optional(CONF_ENABLE_ICON_EU, default=enable_icon_eu): bool,
+                    vol.Optional(CONF_ENABLE_UV, default=enable_uv): bool,
                 }
             ),
         )

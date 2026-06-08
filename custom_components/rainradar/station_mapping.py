@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 from datetime import datetime, timezone
 
@@ -17,12 +19,24 @@ STATION_LIST_URLS = (
     "precipitation/recent/RR_Stundenwerte_Beschreibung_Stationen.txt",
     f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/daily/"
     "kl/recent/KL_Tageswerte_Beschreibung_Stationen.txt",
+    f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/hourly/"
+    "dew_point/recent/TD_Stundenwerte_Beschreibung_Stationen.txt",
+    f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/hourly/"
+    "cloudiness/recent/N_Stundenwerte_Beschreibung_Stationen.txt",
+    f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/daily/"
+    "weather_phenomena/recent/WW_Stundenwerte_Beschreibung_Stationen.txt",
 )
 
-# Geographic filter for DWD stations: keep only those within (or very close
-# to) the Germany bbox. The DWD CDC catalog includes overseas/African
-# stations for some products; without this filter those get matched as
-# "nearest" for German zones and skew the distance metric.
+STATION_PRODUCT_MAP = {
+    "TU_Stundenwerte_Beschreibung_Stationen.txt": {"temperature", "humidity", "wind_speed", "wind_direction", "precipitation"},
+    "FF_Stundenwerte_Beschreibung_Stationen.txt": {"wind_speed", "wind_direction"},
+    "RR_Stundenwerte_Beschreibung_Stationen.txt": {"precipitation"},
+    "KL_Tageswerte_Beschreibung_Stationen.txt": {"pressure", "sunshine_duration", "cloud_cover"},
+    "TD_Stundenwerte_Beschreibung_Stationen.txt": {"dew_point"},
+    "N_Stundenwerte_Beschreibung_Stationen.txt": {"cloud_cover"},
+    "WW_Stundenwerte_Beschreibung_Stationen.txt": {"weather_code"},
+}
+
 _GERMANY_LAT_MIN = RADAR_BBOX_LONLAT[1] - 0.5
 _GERMANY_LAT_MAX = RADAR_BBOX_LONLAT[3] + 0.5
 _GERMANY_LON_MIN = RADAR_BBOX_LONLAT[0] - 0.5
@@ -30,12 +44,20 @@ _GERMANY_LON_MAX = RADAR_BBOX_LONLAT[2] + 0.5
 
 
 class DWDStation:
-    def __init__(self, station_id: str, name: str, lat: float, lon: float):
+    def __init__(
+        self,
+        station_id: str,
+        name: str,
+        lat: float,
+        lon: float,
+        products: set[str] | None = None,
+    ):
         self.station_id = station_id
         self.name = name
         self.lat = lat
         self.lon = lon
         self.distance_km = 0.0
+        self.products = products or set()
 
 
 def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -68,7 +90,7 @@ def _is_active(bis_datum: str) -> bool:
         return False
 
 
-def _parse_station_line(line: str) -> DWDStation | None:
+def _parse_station_line(line: str, products: set[str] | None = None) -> DWDStation | None:
     parts = line.split(maxsplit=6)
     if len(parts) < 7:
         return None
@@ -79,9 +101,6 @@ def _parse_station_line(line: str) -> DWDStation | None:
             return None
         lat = float(parts[4].replace(",", "."))
         lon = float(parts[5].replace(",", "."))
-        # Drop non-German stations: the DWD CDC catalog includes a handful
-        # of overseas/African entries that would otherwise win nearest-match
-        # for German zones because of bad catalog rows.
         if not (_GERMANY_LAT_MIN <= lat <= _GERMANY_LAT_MAX and
                 _GERMANY_LON_MIN <= lon <= _GERMANY_LON_MAX):
             return None
@@ -89,15 +108,16 @@ def _parse_station_line(line: str) -> DWDStation | None:
         name = rest[0].strip('" ') if rest else ""
         if not station_id or not name:
             return None
-        return DWDStation(station_id, name, lat, lon)
+        return DWDStation(station_id, name, lat, lon, products)
     except (ValueError, IndexError):
         return None
 
 
 async def fetch_stations(session: aiohttp.ClientSession) -> list[DWDStation]:
     by_id: dict[str, DWDStation] = {}
-    rejected_outside = 0
     for url in STATION_LIST_URLS:
+        filename = url.rsplit("/", 1)[-1]
+        products = STATION_PRODUCT_MAP.get(filename, set())
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status != 200:
@@ -106,10 +126,12 @@ async def fetch_stations(session: aiohttp.ClientSession) -> list[DWDStation]:
                 raw = await resp.read()
             text = raw.decode("latin-1", errors="replace")
             for line in text.split("\n")[2:]:
-                station = _parse_station_line(line)
+                station = _parse_station_line(line, products)
                 if station is None:
                     continue
-                if by_id.get(station.station_id) is None:
+                if station.station_id in by_id:
+                    by_id[station.station_id].products |= products
+                else:
                     by_id[station.station_id] = station
         except Exception as exc:
             _LOGGER.warning("Failed to fetch stations from %s: %s", url, exc)
@@ -127,3 +149,35 @@ def find_nearest_station(
     nearest = min(stations, key=lambda s: _haversine(lat, lon, s.lat, s.lon))
     nearest.distance_km = round(_haversine(lat, lon, nearest.lat, nearest.lon), 1)
     return nearest
+
+
+def find_best_station(
+    lat: float,
+    lon: float,
+    stations: list[DWDStation],
+    required_products: set[str] | None = None,
+) -> DWDStation | None:
+    """Find the nearest station that covers the required product set.
+
+    If required_products is None or empty, returns the nearest station
+    regardless of product coverage.  When required_products is given the
+    function tries to maximise coverage (most matching products first,
+    then smallest distance).
+    """
+    if not stations:
+        return None
+    if not required_products:
+        return find_nearest_station(lat, lon, stations)
+
+    best: DWDStation | None = None
+    best_score = (-1, float("inf"))
+    for station in stations:
+        match = len(station.products & required_products)
+        dist = _haversine(lat, lon, station.lat, station.lon)
+        score = (match, -dist)
+        if score > best_score:
+            best_score = score
+            best = station
+    if best is not None:
+        best.distance_km = round(_haversine(lat, lon, best.lat, best.lon), 1)
+    return best

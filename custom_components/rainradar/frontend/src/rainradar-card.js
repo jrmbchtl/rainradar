@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.5.0";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -428,6 +428,8 @@ class RainradarCard extends LitElement {
       return;
     }
 
+    this._rotateFromNow();
+
     if (!this._overlay) {
       _dlog("overlay", "create", { url: this._frames[0].url, bounds: RADAR_BOUNDS });
       this._overlay = L.imageOverlay(
@@ -444,6 +446,26 @@ class RainradarCard extends LitElement {
 
     this._showFrame(0);
     this.requestUpdate();
+  }
+
+  _nowIndex() {
+    const now = Date.now();
+    let best = 0;
+    let bestDiff = Infinity;
+    for (let i = 0; i < this._frames.length; i++) {
+      const diff = Math.abs(this._frames[i].ts - now);
+      if (diff < bestDiff) {
+        bestDiff = diff;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  _rotateFromNow() {
+    const nowIdx = this._nowIndex();
+    if (nowIdx === 0 || nowIdx >= this._frames.length) return;
+    this._frames = [...this._frames.slice(nowIdx), ...this._frames.slice(0, nowIdx)];
   }
 
   _showFrame(idx) {

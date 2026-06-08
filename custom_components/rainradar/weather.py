@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from homeassistant.components.weather import WeatherEntity
+from datetime import datetime, timezone
+from typing import Any
+
+from homeassistant.components.weather import (
+    WeatherEntity,
+    Forecast,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     UnitOfPressure,
@@ -20,6 +26,8 @@ from .const import (
     CONF_ZONES,
     CONF_TRACKED_LOCATION_NAME,
     INTEGRATION_VERSION,
+    location_slug,
+    condition_from_dwd_ww,
 )
 from .coordinator import RainradarCoordinator
 
@@ -32,18 +40,9 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[WeatherEntity] = []
 
-    def add_weather_entity(loc_key: str, loc_name: str, safe_name: str) -> None:
-        entities.append(
-            RainradarWeatherEntity(
-                coordinator,
-                entry,
-                loc_key,
-                loc_name,
-                safe_name,
-            )
-        )
-
     zones = entry.options.get(CONF_ZONES, [])
+    location_specs: list[tuple[str, str, str]] = []
+
     if zones:
         for zone_entity in zones:
             zone_state = hass.states.get(zone_entity)
@@ -52,13 +51,13 @@ async def async_setup_entry(
                 if zone_state
                 else zone_entity
             )
-            safe_zone = zone_entity.replace(".", "_").replace("-", "_")
-            add_weather_entity(f"zone::{zone_entity}", zone_name, safe_zone)
+            slug = location_slug(zone_entity)
+            location_specs.append((f"zone::{zone_entity}", zone_name, slug))
     else:
         for loc in entry.options.get(CONF_LOCATIONS, []):
             loc_name = loc.get(CONF_NAME, "unknown")
-            safe_name = loc_name.lower().replace(" ", "_").replace("-", "_")
-            add_weather_entity(loc_name, loc_name, safe_name)
+            slug = location_slug(loc_name)
+            location_specs.append((f"loc::{loc_name}", loc_name, slug))
 
     trackers = entry.options.get(CONF_DEVICE_TRACKERS, [])
     if not trackers:
@@ -73,8 +72,19 @@ async def async_setup_entry(
             if tracker_state
             else entry.options.get(CONF_TRACKED_LOCATION_NAME, tracker_entity)
         )
-        safe_tracked = tracker_entity.replace(".", "_").replace("-", "_")
-        add_weather_entity(f"tracker::{tracker_entity}", tracked_name, safe_tracked)
+        slug = location_slug(tracker_entity)
+        location_specs.append((f"tracker::{tracker_entity}", tracked_name, slug))
+
+    for loc_key, loc_name, slug in location_specs:
+        entities.append(
+            RainradarWeatherEntity(
+                coordinator,
+                entry,
+                loc_key,
+                loc_name,
+                slug,
+            )
+        )
 
     async_add_entities(entities)
 
@@ -91,17 +101,17 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         entry: ConfigEntry,
         loc_key: str,
         loc_name: str,
-        safe_name: str,
+        slug: str,
     ) -> None:
         super().__init__(coordinator)
         self._entry = entry
         self._loc_key = loc_key
         self._loc_name = loc_name
-        self._safe_name = safe_name
-        self._attr_unique_id = f"{DOMAIN}_weather_{safe_name}"
+        self._slug = slug
+        self._attr_unique_id = f"{DOMAIN}_weather_{slug}"
         self._attr_name = loc_name
         self._attr_device_info = {
-            "identifiers": {(DOMAIN, f"{entry.entry_id}_{safe_name}")},
+            "identifiers": {(DOMAIN, f"{entry.entry_id}_{slug}")},
             "name": f"Rainradar {loc_name}",
             "manufacturer": "DWD",
             "model": "Weather Station",
@@ -121,11 +131,19 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def condition(self):
-        return self._loc_data().get("condition")
+        loc = self._loc_data()
+        code = loc.get("weather_code")
+        if code is not None and isinstance(code, (int, float)):
+            return condition_from_dwd_ww(int(code))
+        return loc.get("condition")
 
     @property
     def native_temperature(self):
         return self._loc_data().get("temperature")
+
+    @property
+    def native_temperature_feels_like(self):
+        return self._loc_data().get("apparent_temperature")
 
     @property
     def native_humidity(self):
@@ -133,7 +151,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def native_pressure(self):
-        return None
+        return self._loc_data().get("pressure")
 
     @property
     def native_wind_speed(self):
@@ -144,7 +162,15 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return self._loc_data().get("wind_direction")
 
     @property
-    def extra_state_attributes(self) -> dict | None:
+    def native_wind_gust_speed(self):
+        return self._loc_data().get("wind_gust")
+
+    @property
+    def native_precipitation_unit(self):
+        return "mm/h"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         loc_data = self._loc_data()
         attrs = {
             "station_name": loc_data.get("station_name"),
@@ -155,5 +181,43 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return {k: v for k, v in attrs.items() if v is not None}
 
     @property
-    def forecast(self):
-        return None
+    def forecast(self) -> Forecast | None:
+        loc_data = self._loc_data()
+        raw_forecast = loc_data.get("forecast")
+        if not raw_forecast:
+            return None
+
+        result: Forecast = []
+        for fc in raw_forecast:
+            ts = fc.get("ts")
+            if ts is None:
+                continue
+            entry: dict[str, Any] = {
+                "datetime": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            }
+            if "temperature" in fc:
+                entry["temperature"] = fc["temperature"]
+            if "temp_min" in fc:
+                entry["templow"] = fc["temp_min"]
+            if "temp_max" in fc:
+                entry["temperature"] = fc.get("temperature", fc["temp_max"])
+            if "precipitation" in fc:
+                entry["precipitation"] = fc["precipitation"]
+            if "precip_probability" in fc:
+                entry["precipitation_probability"] = int(fc["precip_probability"])
+            if "wind_speed" in fc:
+                entry["wind_speed"] = fc["wind_speed"]
+            if "wind_direction" in fc:
+                entry["wind_bearing"] = fc["wind_direction"]
+            if "wind_gust" in fc:
+                entry["wind_gust"] = fc["wind_gust"]
+            if "cloud_cover" in fc:
+                entry["cloud_coverage"] = fc["cloud_cover"]
+            if "weather_code" in fc:
+                try:
+                    entry["condition"] = condition_from_dwd_ww(int(fc["weather_code"]))
+                except (ValueError, TypeError):
+                    pass
+            result.append(entry)
+
+        return result

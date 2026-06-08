@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -21,19 +23,79 @@ from .const import (
     ATTR_HUMIDITY,
     ATTR_WIND_SPEED,
     ATTR_WIND_DIRECTION,
+    ATTR_WIND_GUST,
+    ATTR_PRESSURE,
+    ATTR_DEW_POINT,
+    ATTR_CLOUD_COVERAGE,
     ATTR_PRECIPITATION,
+    ATTR_PRECIP_INTENSITY,
+    ATTR_PRECIP_PROBABILITY,
+    ATTR_RAIN_RATE,
+    ATTR_SNOW_RATE,
+    ATTR_FRESH_SNOW,
+    ATTR_SNOW_DEPTH,
+    ATTR_RAIN_24H,
+    ATTR_SNOW_24H,
+    ATTR_SOLAR_RADIATION,
+    ATTR_SUNSHINE_DURATION,
+    ATTR_VISIBILITY,
+    ATTR_WEATHER_CODE,
+    ATTR_APPARENT_TEMPERATURE,
+    ATTR_UV_INDEX,
+    ATTR_UV_INDEX_MAX,
+    ATTR_RADOLAN_PRECIPITATION,
     ATTR_CONDITION,
+    ATTR_STATION_NAME,
+    ATTR_STATION_ID,
+    ATTR_STATION_DISTANCE,
+    ATTR_SOURCE_ENTITY,
+    ATTR_LAST_UPDATE,
+    ATTR_FRAME_ERROR,
+    location_slug,
 )
 from .coordinator import RainradarCoordinator
 
-FIELD_MAP = {
+SENSOR_KEY_MAP = {
     "temperature": ATTR_TEMPERATURE,
     "humidity": ATTR_HUMIDITY,
+    "pressure": ATTR_PRESSURE,
+    "dew_point": ATTR_DEW_POINT,
+    "cloud_cover": ATTR_CLOUD_COVERAGE,
     "wind_speed": ATTR_WIND_SPEED,
     "wind_direction": ATTR_WIND_DIRECTION,
+    "wind_gust": ATTR_WIND_GUST,
     "precipitation": ATTR_PRECIPITATION,
+    "precip_intensity": ATTR_PRECIP_INTENSITY,
+    "precip_probability": ATTR_PRECIP_PROBABILITY,
+    "rain_rate": ATTR_RAIN_RATE,
+    "snow_rate": ATTR_SNOW_RATE,
+    "fresh_snow": ATTR_FRESH_SNOW,
+    "snow_depth": ATTR_SNOW_DEPTH,
+    "rain_24h": ATTR_RAIN_24H,
+    "snow_24h": ATTR_SNOW_24H,
+    "solar_radiation": ATTR_SOLAR_RADIATION,
+    "sunshine_duration": ATTR_SUNSHINE_DURATION,
+    "visibility": ATTR_VISIBILITY,
+    "weather_code": ATTR_WEATHER_CODE,
+    "apparent_temperature": ATTR_APPARENT_TEMPERATURE,
+    "uv_index": ATTR_UV_INDEX,
+    "uv_index_max": ATTR_UV_INDEX_MAX,
+    "radolan_precipitation": ATTR_RADOLAN_PRECIPITATION,
     "condition": ATTR_CONDITION,
 }
+
+CORE_SENSORS = ("temperature", "humidity", "wind_speed", "wind_direction", "condition")
+OPTIONAL_SENSORS = (
+    "pressure", "dew_point", "cloud_cover", "wind_gust",
+    "precipitation", "precip_intensity", "precip_probability",
+    "rain_rate", "snow_rate", "fresh_snow", "snow_depth",
+    "rain_24h", "snow_24h",
+    "solar_radiation", "sunshine_duration",
+    "visibility", "weather_code",
+    "apparent_temperature",
+    "uv_index", "uv_index_max",
+    "radolan_precipitation",
+)
 
 
 async def async_setup_entry(
@@ -43,7 +105,6 @@ async def async_setup_entry(
 ) -> None:
     coordinator: RainradarCoordinator = hass.data[DOMAIN][entry.entry_id]
     entities: list[SensorEntity] = []
-    safe_names: list[str] = []
 
     entities.append(
         RainradarFramesSensor(
@@ -68,33 +129,14 @@ async def async_setup_entry(
         )
     )
 
-    def add_location_entities(loc_key: str, loc_name: str, safe_name: str) -> None:
-        safe_names.append(safe_name)
-        for sensor_key, desc in SENSOR_TYPES.items():
-            entities.append(
-                RainradarSensor(
-                    coordinator,
-                    entry,
-                    loc_key,
-                    loc_name,
-                    safe_name,
-                    SensorEntityDescription(
-                        key=f"{sensor_key}_{safe_name}",
-                        name=f"{loc_name} {desc.get('name', sensor_key)}",
-                        native_unit_of_measurement=desc.get("unit"),
-                        icon=desc.get("icon"),
-                    ),
-                    sensor_key,
-                )
-            )
-
     zones = entry.options.get(CONF_ZONES, [])
+    location_specs: list[tuple[str, str, str]] = []
 
     if not zones:
         for loc in entry.options.get(CONF_LOCATIONS, []):
             loc_name = loc.get(CONF_NAME, "unknown")
-            safe_name = loc_name.lower().replace(" ", "_").replace("-", "_")
-            add_location_entities(loc_name, loc_name, safe_name)
+            slug = location_slug(loc_name)
+            location_specs.append((f"loc::{loc_name}", loc_name, slug))
 
     for zone_entity in zones:
         zone_state = hass.states.get(zone_entity)
@@ -103,8 +145,8 @@ async def async_setup_entry(
             if zone_state
             else zone_entity
         )
-        safe_zone = zone_entity.replace(".", "_").replace("-", "_")
-        add_location_entities(f"zone::{zone_entity}", zone_name, safe_zone)
+        slug = location_slug(zone_entity)
+        location_specs.append((f"zone::{zone_entity}", zone_name, slug))
 
     trackers = entry.options.get(CONF_DEVICE_TRACKERS, [])
     if not trackers:
@@ -119,21 +161,42 @@ async def async_setup_entry(
             if tracker_state
             else entry.options.get(CONF_TRACKED_LOCATION_NAME, tracker_entity)
         )
-        safe_tracked = tracker_entity.replace(".", "_").replace("-", "_")
-        add_location_entities(
-            f"tracker::{tracker_entity}", tracked_name, safe_tracked
-        )
+        slug = location_slug(tracker_entity)
+        location_specs.append((f"tracker::{tracker_entity}", tracked_name, slug))
 
-    _cleanup_deprecated_entities(hass, safe_names)
+    for loc_key, loc_name, slug in location_specs:
+        for sensor_key in CORE_SENSORS + OPTIONAL_SENSORS:
+            if sensor_key not in SENSOR_TYPES:
+                continue
+            desc = SENSOR_TYPES[sensor_key]
+            entities.append(
+                RainradarLocationSensor(
+                    coordinator,
+                    entry,
+                    loc_key,
+                    loc_name,
+                    slug,
+                    SensorEntityDescription(
+                        key=f"{sensor_key}_{slug}",
+                        name=f"{loc_name} {sensor_key.replace('_', ' ').title()}",
+                        native_unit_of_measurement=desc.get("unit"),
+                        icon=desc.get("icon"),
+                        device_class=desc.get("device_class"),
+                        state_class=desc.get("state_class"),
+                    ),
+                    sensor_key,
+                )
+            )
 
+    _cleanup_deprecated_entities(hass, [s[2] for s in location_specs])
     async_add_entities(entities)
 
 
-def _cleanup_deprecated_entities(hass: HomeAssistant, safe_names: list[str]) -> None:
+def _cleanup_deprecated_entities(hass: HomeAssistant, slugs: list[str]) -> None:
     registry = er.async_get(hass)
-    for safe_name in safe_names:
-        for sensor_key in ("pressure", "alerts", "sunshine"):
-            unique_id = f"{DOMAIN}_{safe_name}_{sensor_key}"
+    for slug in slugs:
+        for old_key in ("pressure", "alerts", "sunshine"):
+            unique_id = f"{DOMAIN}_{slug}_{old_key}"
             entity_id = registry.async_get_entity_id("sensor", DOMAIN, unique_id)
             if entity_id is not None:
                 registry.async_remove(entity_id)
@@ -181,7 +244,7 @@ class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
         )
 
     @property
-    def extra_state_attributes(self) -> dict | None:
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         data = self.coordinator.data
         if not data:
             return None
@@ -220,19 +283,11 @@ class RainradarStationsSensor(CoordinatorEntity, SensorEntity):
         return data.get("stations_count")
 
     @property
-    def extra_state_attributes(self) -> dict | None:
-        data = self.coordinator.data
-        if not data:
-            return None
-        # The full DWD station catalog is ~1000+ entries. Even shipping
-        # just {lat, lon} per station blows past the recorder's 16 KiB
-        # attribute cap (~80 KB serialized), and the card does not
-        # consume this attribute (markers were removed in 0.3.x). Drop
-        # the payload entirely; expose only the count via native_value.
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         return None
 
 
-class RainradarSensor(CoordinatorEntity, SensorEntity):
+class RainradarLocationSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
 
     def __init__(
@@ -241,7 +296,7 @@ class RainradarSensor(CoordinatorEntity, SensorEntity):
         entry: ConfigEntry,
         loc_key: str,
         loc_name: str,
-        safe_name: str,
+        slug: str,
         description: SensorEntityDescription,
         sensor_key: str,
     ) -> None:
@@ -249,20 +304,19 @@ class RainradarSensor(CoordinatorEntity, SensorEntity):
         self._entry = entry
         self._loc_key = loc_key
         self._loc_name = loc_name
-        self._safe_name = safe_name
+        self._slug = slug
         self._sensor_key = sensor_key
         self.entity_description = description
-        self._attr_unique_id = f"{DOMAIN}_{safe_name}_{sensor_key}"
+        self._attr_unique_id = f"{DOMAIN}_{slug}_{sensor_key}"
         self._attr_device_info = _common_device_info(
-            entry, safe_name, f"Rainradar {loc_name}", "Weather Station"
+            entry, slug, f"Rainradar {loc_name}", "Weather Station"
         )
 
     @property
     def available(self) -> bool:
         if not (self.coordinator.last_update_success and self.coordinator.data):
             return False
-        return self._sensor_key in (self.coordinator.data.get("locations", {})
-                                     .get(self._loc_key) or {})
+        return self._loc_key in (self.coordinator.data.get("locations") or {})
 
     @property
     def native_value(self):
@@ -270,21 +324,21 @@ class RainradarSensor(CoordinatorEntity, SensorEntity):
         if data is None:
             return None
         loc_data = data.get("locations", {}).get(self._loc_key, {})
-        field = FIELD_MAP.get(self._sensor_key)
+        field = SENSOR_KEY_MAP.get(self._sensor_key)
         if field is None:
             return None
         return loc_data.get(field)
 
     @property
-    def extra_state_attributes(self) -> dict | None:
+    def extra_state_attributes(self) -> dict[str, Any] | None:
         data = self.coordinator.data
         if data is None:
             return None
         loc_data = data.get("locations", {}).get(self._loc_key, {})
         attrs = {
-            "station_name": loc_data.get("station_name"),
-            "station_distance_km": loc_data.get("station_distance_km"),
-            "station_id": loc_data.get("station_id"),
-            "source_entity": loc_data.get("source_entity"),
+            ATTR_STATION_NAME: loc_data.get(ATTR_STATION_NAME),
+            ATTR_STATION_DISTANCE: loc_data.get(ATTR_STATION_DISTANCE),
+            ATTR_STATION_ID: loc_data.get(ATTR_STATION_ID),
+            ATTR_SOURCE_ENTITY: loc_data.get(ATTR_SOURCE_ENTITY),
         }
         return {k: v for k, v in attrs.items() if v is not None}

@@ -50,6 +50,7 @@ from .const import (
     normalize_entity_list,
     apparent_temperature,
     condition_from_dwd_ww,
+    condition_from_temp,
     CDC_10MIN_PRODUCTS,
     CDC_10MIN_FILENAMES,
     CDC_HOURLY_PRODUCTS,
@@ -217,7 +218,7 @@ class RainradarCoordinator(DataUpdateCoordinator):
 
         if "temperature" in result:
             t = result["temperature"]
-            result["condition"] = condition_from_dwd_ww(None)
+            result["condition"] = condition_from_temp(t)
             if "humidity" in result and "wind_speed" in result:
                 result["apparent_temperature"] = apparent_temperature(
                     t, result["humidity"], result["wind_speed"]
@@ -639,6 +640,8 @@ class RainradarCoordinator(DataUpdateCoordinator):
                     for k, v in daily_results[sid].items():
                         if k not in loc or loc[k] is None:
                             loc[k] = v
+                if "weather_code" in loc and loc["weather_code"] is not None:
+                    loc["condition"] = condition_from_dwd_ww(int(loc["weather_code"]))
 
                 if loc_key in radolan_results and radolan_results[loc_key] is not None:
                     loc["radolan_precipitation"] = radolan_results[loc_key]
@@ -668,6 +671,8 @@ class RainradarCoordinator(DataUpdateCoordinator):
                 "frame_error": self._last_frame_error,
             }
 
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             raise UpdateFailed(f"Failed to update DWD data: {exc}") from exc
 

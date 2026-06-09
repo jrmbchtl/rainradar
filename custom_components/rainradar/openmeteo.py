@@ -47,7 +47,7 @@ async def fetch_openmeteo_weather(
             f"&current={current_params}"
             f"&hourly={hourly_params}"
             f"&daily={daily_params}"
-            f"&timezone=auto&forecast_hours=48&forecast_days=14"
+            f"&timezone=auto&forecast_days=14"
         )
 
         async with asyncio.timeout(15):
@@ -130,7 +130,7 @@ async def fetch_openmeteo_weather(
                 "cloud_cover": "cloud_cover",
             }
             for i, t_str in enumerate(hourly_times):
-                if i >= 48:
+                if i >= 168:
                     break
                 entry: dict = {}
                 try:

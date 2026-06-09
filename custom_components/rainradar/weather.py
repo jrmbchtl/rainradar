@@ -77,6 +77,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         self._loc_name = loc_name
         self._slug = slug
         self._radar_refresh_count = 0
+        self._mosmix_cache: list[dict] | None = None
         self._attr_unique_id = f"{DOMAIN}_weather_{slug}"
         self._attr_name = loc_name
         self._attr_device_info = {
@@ -98,6 +99,9 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
     @callback
     def _radar_update_listener(self):
         self._radar_refresh_count += 1
+        mosmix = self._mosmix_forecast()
+        if mosmix:
+            self._mosmix_cache = mosmix
         self.async_write_ha_state()
 
     @property
@@ -188,6 +192,25 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         if not radar_coord or not radar_coord.last_update_success or not radar_coord.data:
             return None
         return radar_coord.data.get("mosmix_by_location", {}).get(self._loc_key)
+
+    def _merged_hourly(self) -> list[dict] | None:
+        om = self._om_hourly_forecast()
+        mosmix = self._mosmix_cache or self._mosmix_forecast()
+        if not mosmix:
+            return om
+        if not om:
+            return mosmix
+        by_ts = {fc["ts"]: fc for fc in mosmix}
+        result = []
+        for fc in om:
+            if fc["ts"] in by_ts:
+                result.append(by_ts[fc["ts"]])
+                del by_ts[fc["ts"]]
+            else:
+                result.append(fc)
+        for ts in sorted(by_ts):
+            result.append(by_ts[ts])
+        return result
 
     def _om_daily_forecast(self):
         return self._loc_data().get("forecast_daily")
@@ -286,21 +309,15 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return result
 
     async def async_forecast_hourly(self) -> list[Forecast] | None:
-        mosmix = self._mosmix_forecast()
-        if mosmix:
-            return self._fc_list(mosmix)
-        om_hourly = self._om_hourly_forecast()
-        if om_hourly:
-            return self._fc_list(om_hourly)
+        merged = self._merged_hourly()
+        if merged:
+            return self._fc_list(merged)
         return []
 
     async def async_forecast_twice_daily(self) -> list[Forecast] | None:
-        mosmix = self._mosmix_forecast()
-        if mosmix:
-            return self._twice_daily_from_hourly(mosmix)
-        om_hourly = self._om_hourly_forecast()
-        if om_hourly:
-            return self._twice_daily_from_hourly(om_hourly)
+        merged = self._merged_hourly()
+        if merged:
+            return self._twice_daily_from_hourly(merged)
         return []
 
     def _twice_daily_from_hourly(self, hourly: list[dict]) -> list[Forecast]:

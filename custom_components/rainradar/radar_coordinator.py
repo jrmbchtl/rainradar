@@ -459,6 +459,10 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                         radar_locations[loc_key]["warning_headline"] = headline
                     radar_locations[loc_key]["warning_count"] = len(matching)
 
+            for loc_key in radar_locations:
+                radar_locations[loc_key].setdefault("warning_level", 0)
+                radar_locations[loc_key].setdefault("warning_count", 0)
+
             result["locations"] = radar_locations
 
             # Also keep flat keys for backward-compatible diagnostics

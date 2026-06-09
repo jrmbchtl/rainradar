@@ -34,7 +34,12 @@ async def fetch_openmeteo_weather(
             "rain,snowfall,snow_depth,visibility,uv_index,"
             "sunshine_duration,shortwave_radiation,weather_code"
         )
-        daily_params = "uv_index_max,precipitation_sum,snowfall_sum"
+        daily_params = (
+            "uv_index_max,precipitation_sum,snowfall_sum,"
+            "temperature_2m_max,temperature_2m_min,"
+            "precipitation_probability_max,"
+            "wind_speed_10m_max,wind_direction_10m_dominant,weather_code"
+        )
 
         url = (
             f"{OPEN_METEO_BASE}?latitude={lat}&longitude={lon}"
@@ -143,6 +148,44 @@ async def fetch_openmeteo_weather(
                     entry["snow_depth"] = round(entry["snow_depth"] * 100, 1)  # m → cm
                 hourly_result.append(entry)
             result["hourly"] = hourly_result
+
+        # Daily forecast (14 days)
+        daily_times = daily.get("time", [])
+        if daily_times:
+            daily_forecast = []
+            daily_fields = {
+                "temperature_2m_max": "temperature",
+                "temperature_2m_min": "templow",
+                "precipitation_sum": "precipitation",
+                "precipitation_probability_max": "precip_probability",
+                "wind_speed_10m_max": "wind_speed",
+                "wind_direction_10m_dominant": "wind_direction",
+                "weather_code": "weather_code",
+                "uv_index_max": "uv_index",
+            }
+            for i, t_str in enumerate(daily_times):
+                if i >= 14:
+                    break
+                entry: dict = {}
+                try:
+                    dt = datetime.fromisoformat(t_str).replace(tzinfo=timezone.utc)
+                    entry["ts"] = dt.timestamp()
+                except (ValueError, TypeError):
+                    continue
+                for src_key, dst_key in daily_fields.items():
+                    arr = daily.get(src_key)
+                    if arr and i < len(arr):
+                        val = arr[i]
+                        if val is not None:
+                            entry[dst_key] = round(float(val), 1)
+                if "uv_index" in entry:
+                    uv = entry["uv_index"]
+                    if uv is not None:
+                        entry["uv_index"] = round(uv, 1)
+                if entry:
+                    daily_forecast.append(entry)
+            if daily_forecast:
+                result["forecast_daily"] = daily_forecast
 
         return result if result else None
 

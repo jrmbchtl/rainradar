@@ -276,10 +276,17 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
                 om_data = om_results.get(loc_key)
                 if om_data:
                     for k, v in om_data.items():
-                        if k == "hourly":
+                        if k in ("hourly", "forecast_daily"):
                             continue
                         if k not in loc or loc[k] is None:
                             loc[k] = v
+                    # Store OM daily forecast per location
+                    om_daily = om_data.get("forecast_daily")
+                    if om_daily:
+                        loc["forecast_daily"] = om_daily
+                    # OM pressure is sea-level — always override DWD station-level
+                    if "pressure" in om_data:
+                        loc["pressure"] = om_data["pressure"]
 
                 # Compute condition via priority chain
                 if "weather_code" in loc and loc["weather_code"] is not None:
@@ -305,8 +312,8 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
                 if loc.get("weather_code") is None and om_wmo is not None:
                     loc["weather_code"] = om_wmo
 
-                # Apparent temperature
-                if "temperature" in loc:
+                # Apparent temperature (only compute Steadman if OM didn't provide)
+                if ("apparent_temperature" not in loc or loc["apparent_temperature"] is None) and "temperature" in loc:
                     t = loc["temperature"]
                     h = loc.get("humidity")
                     w = loc.get("wind_speed")

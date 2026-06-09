@@ -5,6 +5,7 @@ from typing import Any
 
 from homeassistant.components.weather import (
     WeatherEntity,
+    WeatherEntityFeature,
     Forecast,
 )
 from homeassistant.config_entries import ConfigEntry
@@ -21,7 +22,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import (
     DOMAIN,
     INTEGRATION_VERSION,
-    location_slug,
     resolve_condition,
     resolve_location_specs,
 )
@@ -57,6 +57,11 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
     _attr_native_wind_speed_unit = UnitOfSpeed.KILOMETERS_PER_HOUR
     _attr_native_visibility_unit = UnitOfLength.KILOMETERS
     _attr_has_entity_name = True
+    _attr_supported_features = (
+        WeatherEntityFeature.FORECAST_DAILY
+        | WeatherEntityFeature.FORECAST_HOURLY
+        | WeatherEntityFeature.FORECAST_TWICE_DAILY
+    )
 
     def __init__(
         self,
@@ -109,11 +114,11 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return self._loc_data().get("temperature")
 
     @property
-    def native_temperature_feels_like(self):
+    def native_apparent_temperature(self):
         return self._loc_data().get("apparent_temperature")
 
     @property
-    def native_humidity(self):
+    def humidity(self):
         return self._loc_data().get("humidity")
 
     @property
@@ -125,16 +130,12 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return self._loc_data().get("wind_speed")
 
     @property
-    def native_wind_bearing(self):
+    def wind_bearing(self):
         return self._loc_data().get("wind_direction")
 
     @property
     def native_wind_gust_speed(self):
         return self._loc_data().get("wind_gust")
-
-    @property
-    def native_precipitation(self):
-        return self._loc_data().get("precipitation")
 
     @property
     def native_visibility(self):
@@ -149,7 +150,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return self._loc_data().get("uv_index")
 
     @property
-    def native_cloud_cover(self):
+    def cloud_coverage(self):
         return self._loc_data().get("cloud_cover")
 
     @property
@@ -168,57 +169,154 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return {k: v for k, v in attrs.items() if v is not None}
 
     @property
-    def forecast(self) -> Forecast | None:
-        radar_coord = self.hass.data[DOMAIN].get(f"{self._entry.entry_id}_radar")
+    def _radar_coord(self):
+        return self.hass.data[DOMAIN].get(f"{self._entry.entry_id}_radar")
+
+    def _mosmix_forecast(self):
+        radar_coord = self._radar_coord
         if not radar_coord or not radar_coord.last_update_success or not radar_coord.data:
             return None
-        loc_data = self._loc_data()
-        station_id = loc_data.get("station_id")
-        forecasts_by_station = radar_coord.data.get("forecasts_by_station", {})
-        raw_forecast = None
-        if station_id and station_id in forecasts_by_station:
-            raw_forecast = forecasts_by_station[station_id]
-        if not raw_forecast:
+        station_id = self._loc_data().get("station_id")
+        if not station_id:
             return None
+        fb = radar_coord.data.get("forecasts_by_station", {})
+        return fb.get(station_id)
 
-        result: Forecast = []
-        for fc in raw_forecast:
-            ts = fc.get("ts")
-            if ts is None:
-                continue
-            entry: dict[str, Any] = {
-                "datetime": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
-            }
-            if "temperature" in fc:
-                entry["temperature"] = fc["temperature"]
-            if "temp_min" in fc:
-                entry["templow"] = fc["temp_min"]
-            if "temp_max" in fc:
-                entry["temperature"] = fc.get("temperature", fc["temp_max"])
-            if "precipitation" in fc:
-                entry["precipitation"] = fc["precipitation"]
-            if "precip_probability" in fc:
-                entry["precipitation_probability"] = int(fc["precip_probability"])
-            if "wind_speed" in fc:
-                entry["wind_speed"] = fc["wind_speed"]
-            if "wind_direction" in fc:
-                entry["wind_bearing"] = fc["wind_direction"]
-            if "wind_gust" in fc:
-                entry["wind_gust"] = fc["wind_gust"]
-            if "cloud_cover" in fc:
-                entry["cloud_coverage"] = fc["cloud_cover"]
-            if "weather_code" in fc:
-                try:
-                    entry["condition"] = resolve_condition(
-                        dwd_ww=int(fc["weather_code"]),
-                        mosmix_ww=None,
-                        openmeteo_wmo=None,
-                        cloud_cover=fc.get("cloud_cover"),
-                        precipitation=fc.get("precipitation"),
-                        temperature=fc.get("temperature"),
-                    )
-                except (ValueError, TypeError):
-                    pass
-            result.append(entry)
+    def _om_daily_forecast(self):
+        return self._loc_data().get("forecast_daily")
 
+    def _fc_to_forecast(self, fc: dict, is_daytime: bool | None = None) -> dict | None:
+        ts = fc.get("ts")
+        if ts is None:
+            return None
+        entry: dict[str, Any] = {
+            "datetime": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+        }
+        if is_daytime is not None:
+            entry["is_daytime"] = is_daytime
+        if "temperature" in fc:
+            entry["native_temperature"] = fc["temperature"]
+        if "temp_min" in fc:
+            entry["native_templow"] = fc["temp_min"]
+        elif "templow" in fc:
+            entry["native_templow"] = fc["templow"]
+        if "temp_max" in fc:
+            entry["native_temperature"] = fc.get("temperature", fc["temp_max"])
+        if "precipitation" in fc:
+            entry["native_precipitation"] = fc["precipitation"]
+        if "precip_probability" in fc:
+            entry["precipitation_probability"] = int(fc["precip_probability"])
+        if "wind_speed" in fc:
+            entry["native_wind_speed"] = fc["wind_speed"]
+        if "wind_direction" in fc:
+            entry["wind_bearing"] = fc["wind_direction"]
+        if "wind_gust" in fc:
+            entry["native_wind_gust_speed"] = fc["wind_gust"]
+        if "cloud_cover" in fc:
+            entry["cloud_coverage"] = fc["cloud_cover"]
+        if "humidity" in fc:
+            entry["humidity"] = fc["humidity"]
+        if "uv_index" in fc:
+            entry["uv_index"] = fc["uv_index"]
+        if "weather_code" in fc:
+            try:
+                entry["condition"] = resolve_condition(
+                    dwd_ww=int(fc["weather_code"]),
+                    mosmix_ww=None,
+                    openmeteo_wmo=None,
+                    cloud_cover=fc.get("cloud_cover"),
+                    precipitation=fc.get("precipitation"),
+                    temperature=fc.get("temperature"),
+                )
+            except (ValueError, TypeError):
+                pass
+        return entry
+
+    async def async_forecast_daily(self) -> list[Forecast] | None:
+        om_daily = self._om_daily_forecast()
+        if om_daily:
+            result: list[Forecast] = []
+            for fc in om_daily:
+                entry = self._fc_to_forecast(fc)
+                if entry:
+                    result.append(entry)
+            return result
+        mosmix = self._mosmix_forecast()
+        if not mosmix:
+            return None
+        daily: dict[str, dict] = {}
+        for fc in mosmix:
+            dt = datetime.fromtimestamp(fc["ts"], tz=timezone.utc)
+            day_key = dt.strftime("%Y-%m-%d")
+            if day_key not in daily:
+                daily[day_key] = {"ts": fc["ts"], "temp_min": 99, "temp_max": -99}
+            d = daily[day_key]
+            for k in ("temperature", "precipitation", "precip_probability",
+                      "wind_speed", "wind_direction", "wind_gust",
+                      "cloud_cover", "humidity", "uv_index", "weather_code"):
+                if k in fc and (k not in d or d.get(k) is None):
+                    d[k] = fc[k]
+            t = fc.get("temperature")
+            if t is not None:
+                if t < d["temp_min"]:
+                    d["temp_min"] = t
+                if t > d["temp_max"]:
+                    d["temp_max"] = t
+        result = []
+        for day_key in sorted(daily):
+            d = daily[day_key]
+            d["ts"] = datetime.strptime(day_key + "T12:00:00+00:00",
+                                         "%Y-%m-%dT%H:%M:%S%z").timestamp()
+            entry = self._fc_to_forecast(d)
+            if entry:
+                result.append(entry)
+        return result
+
+    async def async_forecast_hourly(self) -> list[Forecast] | None:
+        mosmix = self._mosmix_forecast()
+        if not mosmix:
+            return None
+        result = []
+        for fc in mosmix:
+            entry = self._fc_to_forecast(fc)
+            if entry:
+                result.append(entry)
+        return result
+
+    async def async_forecast_twice_daily(self) -> list[Forecast] | None:
+        mosmix = self._mosmix_forecast()
+        if not mosmix:
+            return None
+        periods: dict[str, dict] = {}
+        for fc in mosmix:
+            dt = datetime.fromtimestamp(fc["ts"], tz=timezone.utc)
+            hour = dt.hour
+            day_key = dt.strftime("%Y-%m-%d")
+            is_day = 6 <= hour < 18
+            period_key = f"{day_key}_{'day' if is_day else 'night'}"
+            if period_key not in periods:
+                periods[period_key] = {"ts": fc["ts"], "is_daytime": is_day,
+                                       "count": 0, "temp_sum": 0}
+            p = periods[period_key]
+            p["count"] += 1
+            t = fc.get("temperature")
+            if t is not None:
+                p["temp_sum"] += t
+                if "temp_min" not in p or t < p["temp_min"]:
+                    p["temp_min"] = t
+                if "temp_max" not in p or t > p["temp_max"]:
+                    p["temp_max"] = t
+            for k in ("precipitation", "precip_probability",
+                      "wind_speed", "wind_direction", "wind_gust",
+                      "cloud_cover", "humidity", "uv_index", "weather_code"):
+                if k in fc and (k not in p or p.get(k) is None):
+                    p[k] = fc[k]
+        result = []
+        for period_key in sorted(periods):
+            p = periods[period_key]
+            if p["count"] > 0:
+                p["temperature"] = round(p["temp_sum"] / p["count"], 1)
+            entry = self._fc_to_forecast(p, is_daytime=p["is_daytime"])
+            if entry:
+                result.append(entry)
         return result

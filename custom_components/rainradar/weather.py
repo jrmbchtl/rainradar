@@ -15,7 +15,7 @@ from homeassistant.const import (
     UnitOfSpeed,
     UnitOfTemperature,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -85,6 +85,18 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
             "model": "Weather Station",
             "sw_version": INTEGRATION_VERSION,
         }
+
+    async def async_added_to_hass(self):
+        await super().async_added_to_hass()
+        radar_coord = self._radar_coord
+        if radar_coord:
+            self.async_on_remove(
+                radar_coord.async_add_listener(self._radar_update_listener)
+            )
+
+    @callback
+    def _radar_update_listener(self):
+        self.async_write_ha_state()
 
     @property
     def available(self) -> bool:

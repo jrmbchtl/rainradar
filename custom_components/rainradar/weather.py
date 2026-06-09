@@ -76,6 +76,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         self._loc_key = loc_key
         self._loc_name = loc_name
         self._slug = slug
+        self._radar_refresh_count = 0
         self._attr_unique_id = f"{DOMAIN}_weather_{slug}"
         self._attr_name = loc_name
         self._attr_device_info = {
@@ -96,6 +97,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @callback
     def _radar_update_listener(self):
+        self._radar_refresh_count += 1
         self.async_write_ha_state()
 
     @property
@@ -173,6 +175,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
             "station_distance_km": loc_data.get("station_distance_km"),
             "station_id": loc_data.get("station_id"),
             "source_entity": loc_data.get("source_entity"),
+            "radar_refresh_count": self._radar_refresh_count,
         }
         return {k: v for k, v in attrs.items() if v is not None}
 

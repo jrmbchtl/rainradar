@@ -323,48 +323,52 @@ class RadarDataCoordinator(DataUpdateCoordinator):
 
             location_specs = resolve_location_specs(self.hass, self.entry)
 
-            # Radar frames
-            frame_ts = await self._generate_radar_timestamps()
-            frame_urls = await self._prefetch_frames(frame_ts)
-            await self._evict_old_frames()
-
-            result: dict[str, Any] = {
-                "radar_frames": frame_urls,
-                "frame_error": self._last_frame_error,
-            }
-
-            # MOSMIX-S forecast
             enable_forecast = self.entry.options.get(CONF_ENABLE_FORECAST, True)
-            if enable_forecast:
-                unique_sids: set[str] = set()
-                for loc_key, _, _, lat, lon, _sl in location_specs:
-                    station = find_nearest_station(lat, lon, self._stations)
-                    if station:
-                        unique_sids.add(station.station_id)
-                mosmix_tasks: dict[str, asyncio.Task] = {}
-                for sid in unique_sids:
-                    mosmix_tasks[sid] = asyncio.create_task(self._fetch_mosmix(sid))
-                forecasts_by_station: dict[str, list[dict]] = {}
-                for sid, task in mosmix_tasks.items():
-                    try:
-                        forecast = await task
-                        if forecast:
-                            now_ts = datetime.now(timezone.utc).timestamp()
-                            forecasts_by_station[sid] = [
-                                fc for fc in forecast if fc.get("ts", 0) >= now_ts
-                            ][:48]
-                    except Exception:
-                        continue
-                if forecasts_by_station:
-                    result["forecasts_by_station"] = forecasts_by_station
-
-            # UV, RADOLAN, ICON-EU, WARNINGS, AQ — all optional, run in parallel
             enable_uv = self.entry.options.get(CONF_ENABLE_UV, True)
             enable_radolan = self.entry.options.get(CONF_ENABLE_RADOLAN, True)
             enable_icon_eu = self.entry.options.get(CONF_ENABLE_ICON_EU, True)
             enable_warnings = self.entry.options.get(CONF_ENABLE_WARNINGS, True)
             enable_air_quality = self.entry.options.get(CONF_ENABLE_AIR_QUALITY, True)
 
+            # Start frame prefetch + MOSMIX-S in parallel (both are slow)
+            frame_ts = await self._generate_radar_timestamps()
+            frame_task = asyncio.create_task(self._prefetch_frames(frame_ts))
+
+            async def _try_mosmix():
+                if not enable_forecast:
+                    return None
+                unique_sids: set[str] = set()
+                for _lk, _nm, _se, lat, lon, _sl in location_specs:
+                    station = find_nearest_station(lat, lon, self._stations)
+                    if station:
+                        unique_sids.add(station.station_id)
+                tasks = {sid: asyncio.create_task(self._fetch_mosmix(sid)) for sid in unique_sids}
+                result: dict[str, list[dict]] = {}
+                now_ts = datetime.now(timezone.utc).timestamp()
+                for sid, task in tasks.items():
+                    try:
+                        forecast = await task
+                        if forecast:
+                            result[sid] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts][:48]
+                    except Exception:
+                        continue
+                return result if result else None
+
+            mosmix_task = asyncio.create_task(_try_mosmix())
+
+            # Evict old frames while waiting
+            await self._evict_old_frames()
+            frame_urls = await frame_task
+            forecasts_by_station = await mosmix_task
+
+            result: dict[str, Any] = {
+                "radar_frames": frame_urls,
+                "frame_error": self._last_frame_error,
+            }
+            if forecasts_by_station:
+                result["forecasts_by_station"] = forecasts_by_station
+
+            # UV, RADOLAN, ICON-EU, WARNINGS, AQ — all optional, run in parallel
             async def _try_uv():
                 if not enable_uv or not location_specs:
                     return {}

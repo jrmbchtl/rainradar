@@ -78,16 +78,6 @@ def _parse_radolan_binary(data: bytes) -> list[list[int]]:
     return grid
 
 
-def _parse_radolan_hdf5(h5file) -> list[list[int]]:
-    """Parse a RADOLAN HDF5 file into a 2D grid (mm * 10)."""
-    try:
-        dataset = h5file["dataset1"]
-        data = dataset["data"][:]
-        return data.tolist()
-    except Exception as exc:
-        _LOGGER.debug("HDF5 parse error: %s", exc)
-        return []
-
 
 async def _fetch_radolan_file(
     session: aiohttp.ClientSession,
@@ -157,11 +147,3 @@ def get_radolan_value(
     return None
 
 
-async def fetch_radolan_precip(
-    session: aiohttp.ClientSession,
-    lat: float,
-    lon: float,
-) -> float | None:
-    """Fetch RADOLAN precipitation for a location (convenience wrapper)."""
-    grid = await fetch_radolan_grid(session)
-    return get_radolan_value(grid, lat, lon)

@@ -16,6 +16,8 @@ _LOGGER = logging.getLogger(__name__)
 
 MOSMIX_UPDATE_INTERVAL = 3600
 
+_kml_cache: dict[str, tuple[float, dict[str, dict]]] = {}
+
 MOSMIX_ELEMENT_MAP = {
     "TTT": ("temperature", 273.15),
     "TX": ("temp_max", 273.15),
@@ -39,98 +41,6 @@ MOSMIX_ELEMENT_MAP = {
     "VV": ("visibility_raw", 0.001),
     "ww": ("weather_code", 1.0),
     "W1W2": ("weather_code_w2", 1.0),
-}
-
-DWD_WW_TEXT = {
-    0: "No weather phenomena",
-    1: "Cloudless",
-    2: "Low clouds",
-    3: "Alto clouds",
-    4: "Cirrus",
-    5: "Alto-cumulus",
-    6: "Mist",
-    7: "Fog",
-    8: "Drizzle",
-    9: "Rain",
-    10: "Snow",
-    11: "Shower",
-    12: "Thunderstorm",
-    13: "Hail",
-    14: "Sleet",
-    15: "Freezing rain",
-    16: "Dust",
-    17: "Smoke",
-    18: "Sand",
-    19: "Ash",
-    20: "Blowing snow",
-    21: "Blowing sand",
-    22: "Freezing fog",
-    23: "Rime fog",
-    24: "Widespread dust",
-    25: "Haze",
-    30: "Fog",
-    31: "Fog patches",
-    32: "Mist",
-    33: "Thick fog",
-    34: "Freezing fog",
-    35: "Rime fog",
-    40: "Precipitation",
-    41: "Light precipitation",
-    42: "Heavy precipitation",
-    43: "Intermittent light precipitation",
-    44: "Intermittent precipitation",
-    45: "Intermittent heavy precipitation",
-    46: "Rain or snow",
-    47: "Light rain or snow",
-    48: "Heavy rain or snow",
-    49: "Freezing precipitation",
-    50: "Drizzle",
-    51: "Light drizzle",
-    52: "Moderate drizzle",
-    53: "Heavy drizzle",
-    55: "Light freezing drizzle",
-    56: "Moderate freezing drizzle",
-    57: "Heavy freezing drizzle",
-    58: "Light rain and drizzle",
-    59: "Heavy rain and drizzle",
-    60: "Rain",
-    61: "Light rain",
-    62: "Moderate rain",
-    63: "Heavy rain",
-    65: "Light freezing rain",
-    66: "Moderate freezing rain",
-    67: "Heavy freezing rain",
-    68: "Light rain and snow",
-    69: "Heavy rain and snow",
-    70: "Snow",
-    71: "Light snow",
-    72: "Moderate snow",
-    73: "Heavy snow",
-    75: "Heavy snow drifts",
-    76: "Diamond dust",
-    77: "Snow grains",
-    78: "Ice crystals",
-    79: "Ice pellets",
-    80: "Light showers",
-    81: "Moderate showers",
-    82: "Heavy showers",
-    83: "Light rain/snow showers",
-    84: "Heavy rain/snow showers",
-    85: "Light snow showers",
-    86: "Heavy snow showers",
-    87: "Light ice showers",
-    88: "Heavy ice showers",
-    89: "Hail showers",
-    90: "Thunderstorm",
-    91: "Light thunderstorm",
-    92: "Moderate thunderstorm",
-    93: "Heavy thunderstorm",
-    94: "Heavy hailstorm",
-    95: "Thunderstorm with snow",
-    96: "Heavy thunderstorm with hail",
-    97: "Lightning",
-    98: "Lightning and hail",
-    99: "Heavy lightning and hail",
 }
 
 
@@ -190,26 +100,33 @@ async def fetch_mosmix_forecast(
         now = datetime.now(timezone.utc)
         run_hour = (now.hour // 6) * 6
         run_dt = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
-        date_str = run_dt.strftime("%Y%m%d%H")
-        url = f"{DWD_MOSMIX_BASE}/MOSMIX_S_{date_str}_240.kmz"
+        run_key = run_dt.strftime("%Y%m%d%H")
 
-        async with asyncio.timeout(60):
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    _LOGGER.warning("MOSMIX-S fetch failed: HTTP %s", resp.status)
-                    return None
-                data = await resp.read()
+        cached = _kml_cache.get(run_key)
+        if cached and (now.timestamp() - cached[0]) < MOSMIX_UPDATE_INTERVAL:
+            stations = cached[1]
+        else:
+            date_str = run_dt.strftime("%Y%m%d%H")
+            url = f"{DWD_MOSMIX_BASE}/MOSMIX_S_{date_str}_240.kmz"
 
-        kmz = zipfile.ZipFile(io.BytesIO(data))
-        kml_name = next(
-            (n for n in kmz.namelist() if n.endswith(".kml")), None
-        )
-        if kml_name is None:
-            _LOGGER.warning("MOSMIX-S KMZ missing KML file")
-            return None
+            async with asyncio.timeout(60):
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        _LOGGER.warning("MOSMIX-S fetch failed: HTTP %s", resp.status)
+                        return None
+                    data = await resp.read()
 
-        kml_bytes = kmz.read(kml_name)
-        stations = _parse_mosmix_kml(kml_bytes)
+            kmz = zipfile.ZipFile(io.BytesIO(data))
+            kml_name = next(
+                (n for n in kmz.namelist() if n.endswith(".kml")), None
+            )
+            if kml_name is None:
+                _LOGGER.warning("MOSMIX-S KMZ missing KML file")
+                return None
+
+            kml_bytes = kmz.read(kml_name)
+            stations = _parse_mosmix_kml(kml_bytes)
+            _kml_cache[run_key] = (now.timestamp(), stations)
 
         if station_id not in stations:
             _LOGGER.debug("Station %s not found in MOSMIX-S", station_id)
@@ -218,7 +135,7 @@ async def fetch_mosmix_forecast(
         raw_fc = stations[station_id]["forecasts"]
         result = []
         for i, fc in enumerate(raw_fc):
-            ts = run_dt.timestamp() + i * 3600
+            ts = run_dt.timestamp() + (i + 1) * 3600
             entry = {"ts": ts}
             entry.update(fc)
             if "precip_rate_strat" in entry and "precip_rate" in entry:

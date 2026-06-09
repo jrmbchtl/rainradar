@@ -44,14 +44,6 @@ def _iconeu_grid_coords(lat: float, lon: float) -> tuple[int, int]:
     return gx, gy
 
 
-def _parse_grib_simple(data: bytes, nx: int, ny: int) -> list[list[float]]:
-    """Parse a simplified GRIB-like binary payload into a 2D grid.
-
-    This is a fallback for cases where cfgrib/eccodes is not available.
-    Returns empty list - the primary path uses cfgrib.
-    """
-    return []
-
 
 def _parse_with_cfgrib(data: bytes, var_name: str) -> list[list[float]]:
     """Parse GRIB2 data using cfgrib + xarray."""
@@ -133,15 +125,22 @@ async def fetch_icon_eu_precip(
     """
     now = datetime.now(timezone.utc)
     run_hour = (now.hour // 6) * 6
-    step = min(48, max(0, int((now.replace(minute=0, second=0, microsecond=0).timestamp()
-                               - now.replace(hour=run_hour, minute=0, second=0,
-                                            microsecond=0).timestamp()) / 3600) + 1))
-    step = step * 3
+    run_dt = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
+    hours_since_run = (now.timestamp() - run_dt.timestamp()) / 3600
+    step = max(3, (int(hours_since_run) // 3 + 1) * 3)
+    step = min(step, 48)
 
-    rain_grid = await _fetch_icon_var(session, "rain_gsp", run_hour, step)
-    snow_grid = await _fetch_icon_var(session, "snow_gsp", run_hour, step)
-    h_snow_grid = await _fetch_icon_var(session, "h_snow", run_hour, step)
-    freshsnw_grid = await _fetch_icon_var(session, "freshsnw", run_hour, step)
+    results = await asyncio.gather(
+        _fetch_icon_var(session, "rain_gsp", run_hour, step),
+        _fetch_icon_var(session, "snow_gsp", run_hour, step),
+        _fetch_icon_var(session, "h_snow", run_hour, step),
+        _fetch_icon_var(session, "freshsnw", run_hour, step),
+        return_exceptions=True,
+    )
+    rain_grid = results[0] if not isinstance(results[0], BaseException) else None
+    snow_grid = results[1] if not isinstance(results[1], BaseException) else None
+    h_snow_grid = results[2] if not isinstance(results[2], BaseException) else None
+    freshsnw_grid = results[3] if not isinstance(results[3], BaseException) else None
 
     result: dict = {}
     rain = _extract_value(rain_grid, lat, lon)

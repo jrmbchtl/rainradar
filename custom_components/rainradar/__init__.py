@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
 from pathlib import Path
+
+import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
@@ -23,24 +27,48 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    from .coordinator import RainradarCoordinator
+    from .weather_coordinator import WeatherDataCoordinator
+    from .radar_coordinator import RadarDataCoordinator
+    from .station_mapping import DWDStation
 
-    coordinator = RainradarCoordinator(hass, entry)
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
+    session = aiohttp.ClientSession()
+    stations: list[DWDStation] = []
+
+    weather_coordinator = WeatherDataCoordinator(hass, entry, session, stations)
+    radar_coordinator = RadarDataCoordinator(hass, entry, session, stations)
+
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = weather_coordinator
+    hass.data[DOMAIN][f"{entry.entry_id}_radar"] = radar_coordinator
+    hass.data[DOMAIN]["session"] = session
+    hass.data[DOMAIN]["stations"] = stations
 
     await _register_frames_path(hass, entry.entry_id)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    try:
+        await weather_coordinator.async_config_entry_first_refresh()
+    except Exception as exc:
+        _LOGGER.warning(
+            "Initial weather refresh failed for %s; will retry on next interval: %s",
+            entry.entry_id,
+            exc,
+        )
+
+    asyncio.create_task(_initial_radar_refresh(radar_coordinator))
+
+    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    return True
+
+
+async def _initial_radar_refresh(coordinator):
+    """Run first radar refresh in background so sensors appear immediately."""
     try:
         await coordinator.async_config_entry_first_refresh()
     except Exception as exc:
         _LOGGER.warning(
-            "Initial DWD refresh failed for %s; will retry on next interval: %s",
-            entry.entry_id,
-            exc,
+            "Initial radar refresh failed; will retry on next interval: %s", exc
         )
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
-    return True
 
 
 async def _register_card(hass: HomeAssistant) -> None:
@@ -55,11 +83,6 @@ async def _register_card(hass: HomeAssistant) -> None:
     if not os.path.isfile(card_path):
         _LOGGER.warning("Rainradar card JS not found at %s", card_path)
         return
-    # Version the URL so the browser is forced to refetch when the
-    # integration bumps. HA's static-path cache_headers=False already
-    # tells the browser not to cache, but a stale browser cache from
-    # before that header was set (or an overzealous service worker)
-    # can still pin the old bundle. A versioned path is a fresh URL.
     url = f"/{DOMAIN}/v{INTEGRATION_VERSION}/rainradar-card.js"
 
     try:
@@ -78,9 +101,6 @@ async def _register_card(hass: HomeAssistant) -> None:
         resources = hass.data.get("lovelace", {}).get("resources")
         if resources is not None and hasattr(resources, "async_create_item"):
             items = await resources.async_items()
-            # Drop any stale rainradar-card resources from previous
-            # versions (different URL paths under the same DOMAIN) so the
-            # resource list does not pile up over time.
             for item in items:
                 item_url = item.get("url", "")
                 if (
@@ -98,11 +118,6 @@ async def _register_card(hass: HomeAssistant) -> None:
                             "Failed to remove stale resource %s: %s", item_url, exc
                         )
             if not any(r.get("url") == url for r in items):
-                # res_type: "js" loads the script synchronously, so the
-                # custom element is defined before HA's card picker can
-                # instantiate <rainradar-card>. With "module" the picker
-                # occasionally wins the race and logs
-                # "custom element doesn't exist: rainradar-card".
                 await resources.async_create_item(
                     {"res_type": "js", "url": url}
                 )
@@ -137,8 +152,6 @@ async def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
     registered.add(entry_id)
 
     cache_dir = frames_cache_dir(hass.config.path(""), entry_id)
-    # mkdir is a blocking syscall; offload to a thread so the event loop
-    # stays responsive on the first setup of an integration.
     await asyncio.to_thread(cache_dir.mkdir, parents=True, exist_ok=True)
     url = frames_url_prefix(entry_id)
 
@@ -149,11 +162,6 @@ async def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
         cache_dir.exists(),
     )
 
-    # HA 2026.x exposes only `async_register_static_paths` (the sync
-    # `register_static_path` was removed). The route is attached
-    # immediately on `await`, so the next request to <url>/<file>.png
-    # is served from <cache_dir>/<file>.png. aiohttp's StaticResource
-    # asserts `not prefix.endswith("/")` — see `frames_url_prefix`.
     from homeassistant.components.http import StaticPathConfig
 
     await hass.http.async_register_static_paths(
@@ -163,11 +171,22 @@ async def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    coordinator = hass.data[DOMAIN][entry.entry_id]
-    await coordinator.async_close()
+    weather_coordinator = hass.data[DOMAIN].get(entry.entry_id)
+    radar_coordinator = hass.data[DOMAIN].get(f"{entry.entry_id}_radar")
+
+    if weather_coordinator:
+        await weather_coordinator.async_close()
+    if radar_coordinator:
+        await radar_coordinator.async_close()
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        hass.data[DOMAIN].pop(f"{entry.entry_id}_radar", None)
+        session = hass.data[DOMAIN].pop("session", None)
+        if session and not session.closed:
+            await session.close()
+
     return unload_ok
 
 

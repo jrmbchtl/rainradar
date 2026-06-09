@@ -4,6 +4,7 @@ from typing import Any
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import entity_registry as er
@@ -11,12 +12,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DOMAIN,
-    CONF_LOCATIONS,
-    CONF_NAME,
-    CONF_DEVICE_TRACKER,
-    CONF_DEVICE_TRACKERS,
-    CONF_ZONES,
-    CONF_TRACKED_LOCATION_NAME,
     INTEGRATION_VERSION,
     SENSOR_TYPES,
     ATTR_TEMPERATURE,
@@ -51,9 +46,18 @@ from .const import (
     ATTR_SOURCE_ENTITY,
     ATTR_LAST_UPDATE,
     ATTR_FRAME_ERROR,
-    location_slug,
+    ATTR_WARNING_LEVEL,
+    ATTR_WARNING_HEADLINE,
+    ATTR_WARNING_COUNT,
+    ATTR_AQI_EUROPEAN,
+    ATTR_AQI_US,
+    ATTR_PM2_5,
+    ATTR_PM10,
+    ATTR_NITROGEN_DIOXIDE,
+    resolve_location_specs,
 )
-from .coordinator import RainradarCoordinator
+from .weather_coordinator import WeatherDataCoordinator
+from .radar_coordinator import RadarDataCoordinator
 
 SENSOR_KEY_MAP = {
     "temperature": ATTR_TEMPERATURE,
@@ -82,6 +86,21 @@ SENSOR_KEY_MAP = {
     "uv_index_max": ATTR_UV_INDEX_MAX,
     "radolan_precipitation": ATTR_RADOLAN_PRECIPITATION,
     "condition": ATTR_CONDITION,
+    "ozone": "ozone",
+    "soil_temp_2cm": "soil_temp_2cm",
+    "soil_temp_5cm": "soil_temp_5cm",
+    "soil_temp_10cm": "soil_temp_10cm",
+    "station_name": ATTR_STATION_NAME,
+    "station_id": ATTR_STATION_ID,
+    "station_distance": ATTR_STATION_DISTANCE,
+    "warning_level": ATTR_WARNING_LEVEL,
+    "warning_headline": ATTR_WARNING_HEADLINE,
+    "warning_count": ATTR_WARNING_COUNT,
+    "aqi_european": ATTR_AQI_EUROPEAN,
+    "aqi_us": ATTR_AQI_US,
+    "pm2_5": ATTR_PM2_5,
+    "pm10": ATTR_PM10,
+    "nitrogen_dioxide": ATTR_NITROGEN_DIOXIDE,
 }
 
 CORE_SENSORS = ("temperature", "humidity", "wind_speed", "wind_direction", "condition")
@@ -95,7 +114,12 @@ OPTIONAL_SENSORS = (
     "apparent_temperature",
     "uv_index", "uv_index_max",
     "radolan_precipitation",
+    "ozone",
+    "soil_temp_2cm", "soil_temp_5cm", "soil_temp_10cm",
+    "warning_level", "warning_headline", "warning_count",
+    "aqi_european", "aqi_us", "pm2_5", "pm10", "nitrogen_dioxide",
 )
+DEBUG_STATION_SENSORS = ("station_name", "station_id", "station_distance")
 
 
 async def async_setup_entry(
@@ -103,12 +127,13 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: RainradarCoordinator = hass.data[DOMAIN][entry.entry_id]
+    weather_coordinator: WeatherDataCoordinator = hass.data[DOMAIN][entry.entry_id]
+    radar_coordinator: RadarDataCoordinator = hass.data[DOMAIN][f"{entry.entry_id}_radar"]
     entities: list[SensorEntity] = []
 
     entities.append(
         RainradarFramesSensor(
-            coordinator,
+            radar_coordinator,
             entry,
             SensorEntityDescription(
                 key="radar_frames",
@@ -119,7 +144,7 @@ async def async_setup_entry(
     )
     entities.append(
         RainradarStationsSensor(
-            coordinator,
+            weather_coordinator,
             entry,
             SensorEntityDescription(
                 key="stations",
@@ -129,49 +154,38 @@ async def async_setup_entry(
         )
     )
 
-    zones = entry.options.get(CONF_ZONES, [])
-    location_specs: list[tuple[str, str, str]] = []
-
-    if not zones:
-        for loc in entry.options.get(CONF_LOCATIONS, []):
-            loc_name = loc.get(CONF_NAME, "unknown")
-            slug = location_slug(loc_name)
-            location_specs.append((f"loc::{loc_name}", loc_name, slug))
-
-    for zone_entity in zones:
-        zone_state = hass.states.get(zone_entity)
-        zone_name = (
-            zone_state.attributes.get("friendly_name", zone_entity)
-            if zone_state
-            else zone_entity
-        )
-        slug = location_slug(zone_entity)
-        location_specs.append((f"zone::{zone_entity}", zone_name, slug))
-
-    trackers = entry.options.get(CONF_DEVICE_TRACKERS, [])
-    if not trackers:
-        tracker = entry.options.get(CONF_DEVICE_TRACKER)
-        if tracker:
-            trackers = [tracker]
-
-    for tracker_entity in trackers:
-        tracker_state = hass.states.get(tracker_entity)
-        tracked_name = (
-            tracker_state.attributes.get("friendly_name", tracker_entity)
-            if tracker_state
-            else entry.options.get(CONF_TRACKED_LOCATION_NAME, tracker_entity)
-        )
-        slug = location_slug(tracker_entity)
-        location_specs.append((f"tracker::{tracker_entity}", tracked_name, slug))
-
-    for loc_key, loc_name, slug in location_specs:
+    location_specs = resolve_location_specs(hass, entry)
+    for loc_key, loc_name, _source_entity, _lat, _lon, slug in location_specs:
         for sensor_key in CORE_SENSORS + OPTIONAL_SENSORS:
             if sensor_key not in SENSOR_TYPES:
                 continue
             desc = SENSOR_TYPES[sensor_key]
             entities.append(
                 RainradarLocationSensor(
-                    coordinator,
+                    weather_coordinator,
+                    radar_coordinator,
+                    entry,
+                    loc_key,
+                    loc_name,
+                    slug,
+                    SensorEntityDescription(
+                        key=f"{sensor_key}_{slug}",
+                        name=f"{loc_name} {sensor_key.replace('_', ' ').title()}",
+                        native_unit_of_measurement=desc.get("unit"),
+                        icon=desc.get("icon"),
+                        device_class=desc.get("device_class"),
+                        state_class=desc.get("state_class"),
+                    ),
+                    sensor_key,
+                )
+            )
+        for sensor_key in DEBUG_STATION_SENSORS:
+            if sensor_key not in SENSOR_TYPES:
+                continue
+            desc = SENSOR_TYPES[sensor_key]
+            entities.append(
+                RainradarDebugStationSensor(
+                    weather_coordinator,
                     entry,
                     loc_key,
                     loc_name,
@@ -188,7 +202,32 @@ async def async_setup_entry(
                 )
             )
 
-    _cleanup_deprecated_entities(hass, [s[2] for s in location_specs])
+    entities.append(
+        RainradarHealthSensor(
+            weather_coordinator,
+            entry,
+            SensorEntityDescription(
+                key="weather_health",
+                name="Weather Health",
+                icon="mdi:heart-pulse",
+            ),
+            "weather_coordinator",
+        )
+    )
+    entities.append(
+        RainradarHealthSensor(
+            radar_coordinator,
+            entry,
+            SensorEntityDescription(
+                key="radar_health",
+                name="Radar Health",
+                icon="mdi:radar",
+            ),
+            "radar_coordinator",
+        )
+    )
+
+    _cleanup_deprecated_entities(hass, [s[5] for s in location_specs])
     async_add_entities(entities)
 
 
@@ -217,7 +256,7 @@ class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self,
-        coordinator: RainradarCoordinator,
+        coordinator: RadarDataCoordinator,
         entry: ConfigEntry,
         description: SensorEntityDescription,
     ) -> None:
@@ -260,7 +299,7 @@ class RainradarStationsSensor(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self,
-        coordinator: RainradarCoordinator,
+        coordinator: WeatherDataCoordinator,
         entry: ConfigEntry,
         description: SensorEntityDescription,
     ) -> None:
@@ -292,7 +331,8 @@ class RainradarLocationSensor(CoordinatorEntity, SensorEntity):
 
     def __init__(
         self,
-        coordinator: RainradarCoordinator,
+        coordinator: WeatherDataCoordinator,
+        radar_coordinator: RadarDataCoordinator,
         entry: ConfigEntry,
         loc_key: str,
         loc_name: str,
@@ -301,6 +341,7 @@ class RainradarLocationSensor(CoordinatorEntity, SensorEntity):
         sensor_key: str,
     ) -> None:
         super().__init__(coordinator)
+        self._radar_coordinator = radar_coordinator
         self._entry = entry
         self._loc_key = loc_key
         self._loc_name = loc_name
@@ -327,7 +368,13 @@ class RainradarLocationSensor(CoordinatorEntity, SensorEntity):
         field = SENSOR_KEY_MAP.get(self._sensor_key)
         if field is None:
             return None
-        return loc_data.get(field)
+        val = loc_data.get(field)
+        if val is not None:
+            return val
+        if self._radar_coordinator and self._radar_coordinator.data:
+            radar_loc = self._radar_coordinator.data.get("locations", {}).get(self._loc_key, {})
+            return radar_loc.get(field)
+        return None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
@@ -342,3 +389,83 @@ class RainradarLocationSensor(CoordinatorEntity, SensorEntity):
             ATTR_SOURCE_ENTITY: loc_data.get(ATTR_SOURCE_ENTITY),
         }
         return {k: v for k, v in attrs.items() if v is not None}
+
+
+class RainradarDebugStationSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: WeatherDataCoordinator,
+        entry: ConfigEntry,
+        loc_key: str,
+        loc_name: str,
+        slug: str,
+        description: SensorEntityDescription,
+        sensor_key: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._loc_key = loc_key
+        self._loc_name = loc_name
+        self._slug = slug
+        self._sensor_key = sensor_key
+        self.entity_description = description
+        self._attr_unique_id = f"{DOMAIN}_{slug}_{sensor_key}"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"{entry.entry_id}_debug")},
+            "name": "Rainradar Debug",
+            "manufacturer": "DWD",
+            "model": "Debug Info",
+            "sw_version": INTEGRATION_VERSION,
+        }
+
+    @property
+    def available(self) -> bool:
+        if not (self.coordinator.last_update_success and self.coordinator.data):
+            return False
+        return self._loc_key in (self.coordinator.data.get("locations") or {})
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data
+        if data is None:
+            return None
+        loc_data = data.get("locations", {}).get(self._loc_key, {})
+        field = SENSOR_KEY_MAP.get(self._sensor_key)
+        if field is None:
+            return None
+        return loc_data.get(field)
+
+
+class RainradarHealthSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator,
+        entry: ConfigEntry,
+        description: SensorEntityDescription,
+        coordinator_name: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._coordinator_name = coordinator_name
+        self.entity_description = description
+        self._attr_unique_id = f"{DOMAIN}_{description.key}"
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, f"{entry.entry_id}_debug")},
+            "name": "Rainradar Debug",
+            "manufacturer": "DWD",
+            "model": "Debug Info",
+            "sw_version": INTEGRATION_VERSION,
+        }
+
+    @property
+    def available(self) -> bool:
+        return True
+
+    @property
+    def native_value(self):
+        return self.coordinator.last_update_success

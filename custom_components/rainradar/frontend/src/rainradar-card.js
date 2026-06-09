@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.5.4";
+const CARD_VERSION = "0.5.5";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -177,9 +177,9 @@ class RainradarCard extends LitElement {
     }
     #map .leaflet-right .leaflet-control { float: right; }
     #map .leaflet-top .leaflet-control { margin-top: 10px; }
-    #map .leaflet-bottom .leaflet-control { margin-bottom: 10px; }
+    #map .leaflet-bottom .leaflet-control { margin-bottom: 0; }
     #map .leaflet-left .leaflet-control { margin-left: 10px; }
-    #map .leaflet-right .leaflet-control { margin-right: 10px; }
+    #map .leaflet-right .leaflet-control { margin-right: 0; }
     #map .leaflet-control-attribution {
       background: rgba(255, 255, 255, 0.85);
       margin: 0;

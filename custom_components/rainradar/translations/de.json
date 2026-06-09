@@ -7,7 +7,13 @@
         "data": {
           "zones": "Zonen",
           "device_trackers": "Gerätetracker",
-          "scan_interval": "Aktualisierungsintervall (Sekunden)"
+          "scan_interval": "Aktualisierungsintervall (Sekunden)",
+          "enable_forecast": "MOSMIX-S-Vorhersage aktivieren (48h stündlich)",
+          "enable_radolan": "RADOLAN-berechneten Niederschlag aktivieren",
+          "enable_icon_eu": "ICON-EU phasengetrennten Niederschlag aktivieren",
+          "enable_uv": "UV-Index aktivieren (Open-Meteo)",
+          "enable_warnings": "DWD-Unwetterwarnungen aktivieren",
+          "enable_air_quality": "Luftqualitätsindex aktivieren (Open-Meteo)"
         }
       }
     },
@@ -22,7 +28,13 @@
         "data": {
           "zones": "Zonen",
           "device_trackers": "Gerätetracker",
-          "scan_interval": "Aktualisierungsintervall (Sekunden)"
+          "scan_interval": "Aktualisierungsintervall (Sekunden)",
+          "enable_forecast": "MOSMIX-S-Vorhersage aktivieren (48h stündlich)",
+          "enable_radolan": "RADOLAN-berechneten Niederschlag aktivieren",
+          "enable_icon_eu": "ICON-EU phasengetrennten Niederschlag aktivieren",
+          "enable_uv": "UV-Index aktivieren (Open-Meteo)",
+          "enable_warnings": "DWD-Unwetterwarnungen aktivieren",
+          "enable_air_quality": "Luftqualitätsindex aktivieren (Open-Meteo)"
         }
       }
     }

@@ -19,6 +19,8 @@ from .const import (
     CONF_ENABLE_RADOLAN,
     CONF_ENABLE_ICON_EU,
     CONF_ENABLE_UV,
+    CONF_ENABLE_WARNINGS,
+    CONF_ENABLE_AIR_QUALITY,
     DEFAULT_SCAN_INTERVAL,
     normalize_entity_list,
 )
@@ -26,6 +28,27 @@ from .const import (
 
 class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 2
+
+    @staticmethod
+    async def async_migrate_entry(
+        hass, config_entry: config_entries.ConfigEntry
+    ) -> bool:
+        if config_entry.version == 1:
+            data = {**config_entry.data}
+            options = {**config_entry.options}
+            options.setdefault(CONF_ZONES, options.pop(CONF_LOCATIONS, []))
+            options.setdefault(CONF_DEVICE_TRACKERS, [])
+            legacy_tracker = options.get(CONF_DEVICE_TRACKER)
+            if legacy_tracker and not options[CONF_DEVICE_TRACKERS]:
+                options[CONF_DEVICE_TRACKERS] = [legacy_tracker]
+            options.setdefault(CONF_ENABLE_FORECAST, True)
+            options.setdefault(CONF_ENABLE_RADOLAN, True)
+            options.setdefault(CONF_ENABLE_ICON_EU, True)
+            options.setdefault(CONF_ENABLE_UV, True)
+            hass.config_entries.async_update_entry(
+                config_entry, data=data, options=options, version=2
+            )
+        return True
 
     def _get_default_zones(self) -> list[str]:
         if self.hass.states.get("zone.home") is not None:
@@ -52,6 +75,8 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_ENABLE_RADOLAN: user_input.get(CONF_ENABLE_RADOLAN, True),
                     CONF_ENABLE_ICON_EU: user_input.get(CONF_ENABLE_ICON_EU, True),
                     CONF_ENABLE_UV: user_input.get(CONF_ENABLE_UV, True),
+                    CONF_ENABLE_WARNINGS: user_input.get(CONF_ENABLE_WARNINGS, True),
+                    CONF_ENABLE_AIR_QUALITY: user_input.get(CONF_ENABLE_AIR_QUALITY, True),
                 },
             )
 
@@ -74,6 +99,8 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Optional(CONF_ENABLE_RADOLAN, default=True): bool,
                     vol.Optional(CONF_ENABLE_ICON_EU, default=True): bool,
                     vol.Optional(CONF_ENABLE_UV, default=True): bool,
+                    vol.Optional(CONF_ENABLE_WARNINGS, default=True): bool,
+                    vol.Optional(CONF_ENABLE_AIR_QUALITY, default=True): bool,
                 }
             ),
         )
@@ -112,6 +139,8 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
         enable_radolan = self._config_entry.options.get(CONF_ENABLE_RADOLAN, True)
         enable_icon_eu = self._config_entry.options.get(CONF_ENABLE_ICON_EU, True)
         enable_uv = self._config_entry.options.get(CONF_ENABLE_UV, True)
+        enable_warnings = self._config_entry.options.get(CONF_ENABLE_WARNINGS, True)
+        enable_air_quality = self._config_entry.options.get(CONF_ENABLE_AIR_QUALITY, True)
 
         if user_input is not None:
             zones = normalize_entity_list(user_input.get(CONF_ZONES))
@@ -131,6 +160,8 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
                     CONF_ENABLE_RADOLAN: user_input.get(CONF_ENABLE_RADOLAN, enable_radolan),
                     CONF_ENABLE_ICON_EU: user_input.get(CONF_ENABLE_ICON_EU, enable_icon_eu),
                     CONF_ENABLE_UV: user_input.get(CONF_ENABLE_UV, enable_uv),
+                    CONF_ENABLE_WARNINGS: user_input.get(CONF_ENABLE_WARNINGS, enable_warnings),
+                    CONF_ENABLE_AIR_QUALITY: user_input.get(CONF_ENABLE_AIR_QUALITY, enable_air_quality),
                 },
             )
 
@@ -158,6 +189,8 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
                     vol.Optional(CONF_ENABLE_RADOLAN, default=enable_radolan): bool,
                     vol.Optional(CONF_ENABLE_ICON_EU, default=enable_icon_eu): bool,
                     vol.Optional(CONF_ENABLE_UV, default=enable_uv): bool,
+                    vol.Optional(CONF_ENABLE_WARNINGS, default=enable_warnings): bool,
+                    vol.Optional(CONF_ENABLE_AIR_QUALITY, default=enable_air_quality): bool,
                 }
             ),
         )

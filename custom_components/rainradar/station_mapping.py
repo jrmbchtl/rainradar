@@ -25,6 +25,8 @@ STATION_LIST_URLS = (
     "cloudiness/recent/N_Stundenwerte_Beschreibung_Stationen.txt",
     f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/daily/"
     "weather_phenomena/recent/WW_Stundenwerte_Beschreibung_Stationen.txt",
+    f"{DWD_OPENDATA}/climate_environment/CDC/observations_germany/climate/hourly/"
+    "visibility/recent/VV_Stundenwerte_Beschreibung_Stationen.txt",
 )
 
 STATION_PRODUCT_MAP = {
@@ -35,6 +37,7 @@ STATION_PRODUCT_MAP = {
     "TD_Stundenwerte_Beschreibung_Stationen.txt": {"dew_point"},
     "N_Stundenwerte_Beschreibung_Stationen.txt": {"cloud_cover"},
     "WW_Stundenwerte_Beschreibung_Stationen.txt": {"weather_code"},
+    "VV_Stundenwerte_Beschreibung_Stationen.txt": {"visibility"},
 }
 
 _GERMANY_LAT_MIN = RADAR_BBOX_LONLAT[1] - 0.5
@@ -151,33 +154,17 @@ def find_nearest_station(
     return nearest
 
 
-def find_best_station(
-    lat: float,
-    lon: float,
-    stations: list[DWDStation],
-    required_products: set[str] | None = None,
-) -> DWDStation | None:
-    """Find the nearest station that covers the required product set.
+def find_nearest_stations(
+    lat: float, lon: float, stations: list[DWDStation], n: int = 3
+) -> list[tuple[DWDStation, float]]:
+    """Find the N nearest stations to a location, sorted by distance (closest first).
 
-    If required_products is None or empty, returns the nearest station
-    regardless of product coverage.  When required_products is given the
-    function tries to maximise coverage (most matching products first,
-    then smallest distance).
+    Returns list of (station, distance_km) tuples. Does NOT mutate station.distance_km.
     """
     if not stations:
-        return None
-    if not required_products:
-        return find_nearest_station(lat, lon, stations)
+        return []
+    with_dists = [(s, round(_haversine(lat, lon, s.lat, s.lon), 1)) for s in stations]
+    with_dists.sort(key=lambda x: x[1])
+    return with_dists[:n]
 
-    best: DWDStation | None = None
-    best_score = (-1, float("inf"))
-    for station in stations:
-        match = len(station.products & required_products)
-        dist = _haversine(lat, lon, station.lat, station.lon)
-        score = (match, -dist)
-        if score > best_score:
-            best_score = score
-            best = station
-    if best is not None:
-        best.distance_km = round(_haversine(lat, lon, best.lat, best.lon), 1)
-    return best
+

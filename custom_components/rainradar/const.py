@@ -21,6 +21,8 @@ CONF_ENABLE_FORECAST = "enable_forecast"
 CONF_ENABLE_RADOLAN = "enable_radolan"
 CONF_ENABLE_ICON_EU = "enable_icon_eu"
 CONF_ENABLE_UV = "enable_uv"
+CONF_ENABLE_WARNINGS = "enable_warnings"
+CONF_ENABLE_AIR_QUALITY = "enable_air_quality"
 
 DEFAULT_SCAN_INTERVAL = 600
 FORECAST_SCAN_INTERVAL = 3600
@@ -42,13 +44,14 @@ DWD_MOSMIX_BASE = f"{DWD_OPENDATA}/weather/local_forecasts/mos/MOSMIX_S/all_stat
 DWD_RADOLAN_BASE = f"{DWD_OPENDATA}/weather/radar/radolan"
 DWD_ICON_EU_BASE = f"{DWD_OPENDATA}/weather/nwp/icon-eu/grib"
 OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
+OPEN_METEO_AIR_QUALITY_BASE = "https://air-quality-api.open-meteo.com/v1/air-quality"
 
 DWD_WMS_RADAR_LAYER = "Niederschlagsradar"
 DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.5.4"
+INTEGRATION_VERSION = "0.5.5"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -82,6 +85,15 @@ ATTR_STATION_DISTANCE = "station_distance_km"
 ATTR_SOURCE_ENTITY = "source_entity"
 ATTR_LAST_UPDATE = "last_update"
 ATTR_FRAME_ERROR = "frame_error"
+ATTR_WARNING_LEVEL = "warning_level"
+ATTR_WARNING_HEADLINE = "warning_headline"
+ATTR_WARNING_COUNT = "warning_count"
+ATTR_AQI_EUROPEAN = "aqi_european"
+ATTR_AQI_US = "aqi_us"
+ATTR_PM2_5 = "pm2_5"
+ATTR_PM10 = "pm10"
+ATTR_NITROGEN_DIOXIDE = "nitrogen_dioxide"
+
 
 SENSOR_TYPES = {
     "temperature": {
@@ -240,6 +252,96 @@ SENSOR_TYPES = {
         "device_class": None,
         "state_class": None,
     },
+    "station_name": {
+        "unit": None,
+        "icon": "mdi:radio-tower",
+        "device_class": None,
+        "state_class": None,
+    },
+    "station_id": {
+        "unit": None,
+        "icon": "mdi:identifier",
+        "device_class": None,
+        "state_class": None,
+    },
+    "station_distance": {
+        "unit": "km",
+        "icon": "mdi:map-marker-distance",
+        "device_class": "distance",
+        "state_class": "measurement",
+    },
+    "warning_level": {
+        "unit": None,
+        "icon": "mdi:alert-octagram",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "warning_headline": {
+        "unit": None,
+        "icon": "mdi:alert-decagram",
+        "device_class": None,
+        "state_class": None,
+    },
+    "warning_count": {
+        "unit": None,
+        "icon": "mdi:alert-box",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "aqi_european": {
+        "unit": "EAQI",
+        "icon": "mdi:air-filter",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "aqi_us": {
+        "unit": "USAQI",
+        "icon": "mdi:air-filter",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "pm2_5": {
+        "unit": "µg/m³",
+        "icon": "mdi:blur",
+        "device_class": "pm25",
+        "state_class": "measurement",
+    },
+    "pm10": {
+        "unit": "µg/m³",
+        "icon": "mdi:blur",
+        "device_class": "pm10",
+        "state_class": "measurement",
+    },
+    "nitrogen_dioxide": {
+        "unit": "µg/m³",
+        "icon": "mdi:chemical-weapon",
+        "device_class": "nitrogen_dioxide",
+        "state_class": "measurement",
+    },
+    "ozone": {
+        "unit": "DU",
+        "icon": "mdi:weather-sunny",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "soil_temp_2cm": {
+        "unit": "°C",
+        "icon": "mdi:thermometer",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
+    "soil_temp_5cm": {
+        "unit": "°C",
+        "icon": "mdi:thermometer",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
+    "soil_temp_10cm": {
+        "unit": "°C",
+        "icon": "mdi:thermometer",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
 }
 
 # DWD 10-minute "now" product configs
@@ -265,6 +367,7 @@ CDC_HOURLY_PRODUCTS = {
     "RR": ("precipitation/recent", ["R1"], ["precipitation"]),
     "DD": ("dew_point/recent", ["TD"], ["dew_point"]),
     "CO": ("cloudiness/recent", ["N"], ["cloud_cover"]),
+    "VV": ("visibility/recent", ["V_V"], ["visibility"]),
 }
 
 # DWD daily product configs
@@ -295,6 +398,86 @@ for _range, _cond in [
         DWD_WW_TO_HA[_code] = _cond
 
 DWD_WW_TO_HA["exceptional"] = "exceptional"
+
+
+# Open-Meteo WMO weather code to HA condition mapping
+# https://open-meteo.com/en/docs#weathervariables
+OPEN_METEO_WMO_TO_HA = {
+    0: "sunny",
+    1: "partlycloudy",
+    2: "partlycloudy",
+    3: "cloudy",
+    45: "fog",
+    48: "fog",
+    51: "rainy",
+    53: "rainy",
+    55: "rainy",
+    56: "snowy",
+    57: "snowy",
+    61: "rainy",
+    63: "rainy",
+    65: "rainy",
+    66: "snowy",
+    67: "snowy",
+    71: "snowy",
+    73: "snowy",
+    75: "snowy",
+    77: "snowy",
+    80: "rainy",
+    81: "rainy",
+    82: "rainy",
+    85: "snowy",
+    86: "snowy",
+    95: "lightning",
+    96: "lightning",
+    99: "lightning",
+}
+
+
+def condition_from_openmeteo_wmo(code: int | None) -> str | None:
+    """Map Open-Meteo WMO weather code to HA condition string."""
+    if code is None or code < 0:
+        return None
+    return OPEN_METEO_WMO_TO_HA.get(code, "exceptional")
+
+
+def resolve_condition(
+    dwd_ww: int | None,
+    mosmix_ww: int | None,
+    openmeteo_wmo: int | None,
+    cloud_cover: float | None,
+    precipitation: float | None,
+    temperature: float | None,
+) -> str:
+    """Resolve HA condition using priority chain.
+
+    1. MOSMIX-S ww (most current, station-specific)
+    2. Open-Meteo WMO weather code (global model, free)
+    3. DWD daily weather_code (WW product)
+    4. Derived from cloud_cover + precipitation
+    5. Temperature fallback
+    """
+    for code in (mosmix_ww, dwd_ww):
+        if code is not None and code >= 0:
+            cond = condition_from_dwd_ww(code)
+            if cond != "exceptional":
+                return cond
+    if openmeteo_wmo is not None and openmeteo_wmo >= 0:
+        cond = condition_from_openmeteo_wmo(openmeteo_wmo)
+        if cond and cond != "exceptional":
+            return cond
+    if cloud_cover is not None:
+        if precipitation and float(precipitation) > 0:
+            return "rainy"
+        if cloud_cover > 80:
+            return "cloudy"
+        if cloud_cover > 40:
+            return "partlycloudy"
+        if cloud_cover <= 40:
+            return "sunny"
+    if temperature is not None:
+        return condition_from_temp(temperature)
+    return "exceptional"
 
 
 def condition_from_dwd_ww(code: int | None) -> str:
@@ -334,10 +517,6 @@ def frames_cache_dir(hass_config_path: str, entry_id: str) -> Path:
     return Path(hass_config_path) / ".storage" / "rainradar" / entry_id
 
 
-def entry_cache_dir(hass_config_path: str, entry_id: str) -> Path:
-    """Return the per-entry cache directory for weather data."""
-    return Path(hass_config_path) / ".storage" / "rainradar" / entry_id
-
 
 def frames_url_prefix(entry_id: str) -> str:
     """Return the URL prefix under which prefetched frames are served."""
@@ -363,6 +542,44 @@ def normalize_entity_list(value: object) -> list[str]:
 def location_slug(name: str) -> str:
     """Convert a location name to a consistent entity-friendly slug."""
     return name.lower().replace(" ", "_").replace("-", "_").replace(".", "_")
+
+
+def resolve_location_specs(hass, entry) -> list[tuple[str, str, str, float, float, str]]:
+    """Resolve configured zones/trackers to (loc_key, name, source_entity, lat, lon, slug)."""
+    location_specs: list[tuple[str, str, str, float, float, str]] = []
+
+    for loc in entry.options.get(CONF_LOCATIONS, []):
+        lat = loc.get(CONF_LATITUDE)
+        lon = loc.get(CONF_LONGITUDE)
+        name = loc.get(CONF_NAME, "unknown")
+        if lat is not None and lon is not None:
+            location_specs.append((f"loc::{name}", name, "manual", float(lat), float(lon), location_slug(name)))
+
+    zone_entities = normalize_entity_list(entry.options.get(CONF_ZONES))
+    for zone_entity in zone_entities:
+        zone_state = hass.states.get(zone_entity)
+        if zone_state is None:
+            continue
+        zlat = zone_state.attributes.get(CONF_LATITUDE)
+        zlon = zone_state.attributes.get(CONF_LONGITUDE)
+        if zlat is None or zlon is None:
+            continue
+        zname = zone_state.attributes.get("friendly_name", zone_entity)
+        location_specs.append((f"zone::{zone_entity}", zname, zone_entity, float(zlat), float(zlon), location_slug(zone_entity)))
+
+    tracker_entities = normalize_entity_list(entry.options.get(CONF_DEVICE_TRACKERS))
+    if not tracker_entities:
+        tracker_entities = normalize_entity_list(entry.options.get(CONF_DEVICE_TRACKER))
+    for tracker_entity in tracker_entities:
+        tracker_state = hass.states.get(tracker_entity)
+        if tracker_state is not None:
+            tlat = tracker_state.attributes.get("latitude")
+            tlon = tracker_state.attributes.get("longitude")
+            if tlat is not None and tlon is not None:
+                tname = tracker_state.attributes.get("friendly_name", tracker_entity)
+                location_specs.append((f"tracker::{tracker_entity}", tname, tracker_entity, float(tlat), float(tlon), location_slug(tracker_entity)))
+
+    return location_specs
 
 
 def mercator_bbox(lon_min: float, lat_min: float, lon_max: float, lat_max: float) -> str:

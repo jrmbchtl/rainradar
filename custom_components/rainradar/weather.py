@@ -239,7 +239,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
             return result
         mosmix = self._mosmix_forecast()
         if not mosmix:
-            return None
+            return []
         daily: dict[str, dict] = {}
         for fc in mosmix:
             dt = datetime.fromtimestamp(fc["ts"], tz=timezone.utc)
@@ -271,7 +271,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
     async def async_forecast_hourly(self) -> list[Forecast] | None:
         mosmix = self._mosmix_forecast()
         if not mosmix:
-            return None
+            return []
         result = []
         for fc in mosmix:
             entry = self._fc_to_forecast(fc)
@@ -282,7 +282,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
     async def async_forecast_twice_daily(self) -> list[Forecast] | None:
         mosmix = self._mosmix_forecast()
         if not mosmix:
-            return None
+            return []
         periods: dict[str, dict] = {}
         for fc in mosmix:
             dt = datetime.fromtimestamp(fc["ts"], tz=timezone.utc)

@@ -154,10 +154,6 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return self._loc_data().get("cloud_cover")
 
     @property
-    def native_precipitation_unit(self):
-        return "mm/h"
-
-    @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         loc_data = self._loc_data()
         attrs = {

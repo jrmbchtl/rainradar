@@ -134,7 +134,11 @@ async def fetch_openmeteo_weather(
                     break
                 entry: dict = {}
                 try:
-                    dt = datetime.fromisoformat(t_str).replace(tzinfo=timezone.utc)
+                    dt = datetime.fromisoformat(t_str)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    else:
+                        dt = dt.astimezone(timezone.utc)
                     entry["ts"] = dt.timestamp()
                 except (ValueError, TypeError):
                     continue

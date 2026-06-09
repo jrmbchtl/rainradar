@@ -187,11 +187,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         radar_coord = self._radar_coord
         if not radar_coord or not radar_coord.last_update_success or not radar_coord.data:
             return None
-        station_id = self._loc_data().get("station_id")
-        if not station_id:
-            return None
-        fb = radar_coord.data.get("forecasts_by_station", {})
-        return fb.get(station_id)
+        return radar_coord.data.get("mosmix_by_location", {}).get(self._loc_key)
 
     def _om_daily_forecast(self):
         return self._loc_data().get("forecast_daily")

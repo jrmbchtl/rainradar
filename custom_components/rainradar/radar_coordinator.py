@@ -37,7 +37,7 @@ from .const import (
     safe_frame_filename,
     resolve_location_specs,
 )
-from .station_mapping import find_nearest_station, DWDStation
+from .station_mapping import find_nearest_stations, DWDStation
 from .mosmix import fetch_mosmix_forecast
 from .radolan import fetch_radolan_grid, get_radolan_value
 from .iconeu import fetch_icon_eu_precip
@@ -337,21 +337,17 @@ class RadarDataCoordinator(DataUpdateCoordinator):
             async def _try_mosmix():
                 if not enable_forecast:
                     return None
-                unique_sids: set[str] = set()
-                for _lk, _nm, _se, lat, lon, _sl in location_specs:
-                    station = find_nearest_station(lat, lon, self._stations)
-                    if station:
-                        unique_sids.add(station.station_id)
-                tasks = {sid: asyncio.create_task(self._fetch_mosmix(sid)) for sid in unique_sids}
                 result: dict[str, list[dict]] = {}
                 now_ts = datetime.now(timezone.utc).timestamp()
-                for sid, task in tasks.items():
-                    try:
-                        forecast = await task
+                for loc_key, _nm, _se, lat, lon, _sl in location_specs:
+                    for station, _dist in find_nearest_stations(lat, lon, self._stations, n=3):
+                        try:
+                            forecast = await self._fetch_mosmix(station.station_id)
+                        except Exception:
+                            continue
                         if forecast:
-                            result[sid] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts]
-                    except Exception:
-                        continue
+                            result[loc_key] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts]
+                            break
                 return result if result else None
 
             mosmix_task = asyncio.create_task(_try_mosmix())
@@ -359,14 +355,14 @@ class RadarDataCoordinator(DataUpdateCoordinator):
             # Evict old frames while waiting
             await self._evict_old_frames()
             frame_urls = await frame_task
-            forecasts_by_station = await mosmix_task
+            mosmix_by_location = await mosmix_task
 
             result: dict[str, Any] = {
                 "radar_frames": frame_urls,
                 "frame_error": self._last_frame_error,
             }
-            if forecasts_by_station:
-                result["forecasts_by_station"] = forecasts_by_station
+            if mosmix_by_location:
+                result["mosmix_by_location"] = mosmix_by_location
 
             # UV, RADOLAN, ICON-EU, WARNINGS, AQ — all optional, run in parallel
             async def _try_uv():

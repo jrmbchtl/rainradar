@@ -349,7 +349,7 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                     try:
                         forecast = await task
                         if forecast:
-                            result[sid] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts][:48]
+                            result[sid] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts]
                     except Exception:
                         continue
                 return result if result else None

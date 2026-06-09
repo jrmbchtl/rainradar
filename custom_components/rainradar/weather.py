@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from homeassistant.components.weather import (
@@ -312,8 +312,12 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         for fc in hourly:
             dt = datetime.fromtimestamp(fc["ts"], tz=timezone.utc)
             hour = dt.hour
-            day_key = dt.strftime("%Y-%m-%d")
-            is_day = 6 <= hour < 18
+            if hour < 6:
+                day_key = (dt - timedelta(days=1)).strftime("%Y-%m-%d")
+                is_day = False
+            else:
+                day_key = dt.strftime("%Y-%m-%d")
+                is_day = 6 <= hour < 18
             period_key = f"{day_key}_{'day' if is_day else 'night'}"
             if period_key not in periods:
                 periods[period_key] = {"ts": fc["ts"], "is_daytime": is_day,

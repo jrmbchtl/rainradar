@@ -32,7 +32,8 @@ async def fetch_openmeteo_weather(
         hourly_params = (
             "temperature_2m,precipitation_probability,precipitation,"
             "rain,snowfall,snow_depth,visibility,uv_index,"
-            "sunshine_duration,shortwave_radiation,weather_code"
+            "sunshine_duration,shortwave_radiation,weather_code,"
+            "wind_speed_10m,wind_direction_10m,cloud_cover"
         )
         daily_params = (
             "uv_index_max,precipitation_sum,snowfall_sum,"
@@ -124,6 +125,9 @@ async def fetch_openmeteo_weather(
                 "shortwave_radiation": "solar_radiation",
                 "weather_code": "weather_code",
                 "visibility": "visibility",
+                "wind_speed_10m": "wind_speed",
+                "wind_direction_10m": "wind_direction",
+                "cloud_cover": "cloud_cover",
             }
             for i, t_str in enumerate(hourly_times):
                 if i >= 48:
@@ -146,6 +150,8 @@ async def fetch_openmeteo_weather(
                     entry["visibility"] = round(entry["visibility"] / 1000, 1)
                 if "snow_depth" in entry:
                     entry["snow_depth"] = round(entry["snow_depth"] * 100, 1)  # m → cm
+                if "wind_speed" in entry:
+                    entry["wind_speed"] = round(entry["wind_speed"] * 3.6, 1)
                 hourly_result.append(entry)
             result["hourly"] = hourly_result
 

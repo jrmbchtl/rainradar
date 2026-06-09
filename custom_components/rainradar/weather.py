@@ -196,6 +196,9 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
     def _om_daily_forecast(self):
         return self._loc_data().get("forecast_daily")
 
+    def _om_hourly_forecast(self):
+        return self._loc_data().get("forecast_hourly")
+
     def _fc_to_forecast(self, fc: dict, is_daytime: bool | None = None) -> dict | None:
         ts = fc.get("ts")
         if ts is None:
@@ -243,15 +246,18 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
                 pass
         return entry
 
+    def _fc_list(self, raw: list[dict], is_daytime: bool | None = None) -> list[Forecast]:
+        result = []
+        for fc in raw:
+            entry = self._fc_to_forecast(fc, is_daytime)
+            if entry:
+                result.append(entry)
+        return result
+
     async def async_forecast_daily(self) -> list[Forecast] | None:
         om_daily = self._om_daily_forecast()
         if om_daily:
-            result: list[Forecast] = []
-            for fc in om_daily:
-                entry = self._fc_to_forecast(fc)
-                if entry:
-                    result.append(entry)
-            return result
+            return self._fc_list(om_daily)
         mosmix = self._mosmix_forecast()
         if not mosmix:
             return []
@@ -285,21 +291,25 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     async def async_forecast_hourly(self) -> list[Forecast] | None:
         mosmix = self._mosmix_forecast()
-        if not mosmix:
-            return []
-        result = []
-        for fc in mosmix:
-            entry = self._fc_to_forecast(fc)
-            if entry:
-                result.append(entry)
-        return result
+        if mosmix:
+            return self._fc_list(mosmix)
+        om_hourly = self._om_hourly_forecast()
+        if om_hourly:
+            return self._fc_list(om_hourly)
+        return []
 
     async def async_forecast_twice_daily(self) -> list[Forecast] | None:
         mosmix = self._mosmix_forecast()
-        if not mosmix:
-            return []
+        if mosmix:
+            return self._twice_daily_from_hourly(mosmix)
+        om_hourly = self._om_hourly_forecast()
+        if om_hourly:
+            return self._twice_daily_from_hourly(om_hourly)
+        return []
+
+    def _twice_daily_from_hourly(self, hourly: list[dict]) -> list[Forecast]:
         periods: dict[str, dict] = {}
-        for fc in mosmix:
+        for fc in hourly:
             dt = datetime.fromtimestamp(fc["ts"], tz=timezone.utc)
             hour = dt.hour
             day_key = dt.strftime("%Y-%m-%d")

@@ -276,14 +276,16 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
                 om_data = om_results.get(loc_key)
                 if om_data:
                     for k, v in om_data.items():
-                        if k in ("hourly", "forecast_daily"):
+                        if k == "hourly":
+                            if v:
+                                loc["forecast_hourly"] = v
+                            continue
+                        if k == "forecast_daily":
+                            if v:
+                                loc["forecast_daily"] = v
                             continue
                         if k not in loc or loc[k] is None:
                             loc[k] = v
-                    # Store OM daily forecast per location
-                    om_daily = om_data.get("forecast_daily")
-                    if om_daily:
-                        loc["forecast_daily"] = om_daily
                     # OM pressure is sea-level — always override DWD station-level
                     if "pressure" in om_data:
                         loc["pressure"] = om_data["pressure"]

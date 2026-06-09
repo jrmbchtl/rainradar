@@ -51,7 +51,7 @@ DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.5.5"
+INTEGRATION_VERSION = "0.5.6"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -67,7 +67,6 @@ ATTR_PRECIP_PROBABILITY = "precip_probability"
 ATTR_RAIN_RATE = "rain_rate"
 ATTR_SNOW_RATE = "snow_rate"
 ATTR_FRESH_SNOW = "fresh_snow"
-ATTR_SNOW_DEPTH = "snow_depth"
 ATTR_RAIN_24H = "rain_24h"
 ATTR_SNOW_24H = "snow_24h"
 ATTR_SOLAR_RADIATION = "solar_radiation"
@@ -77,7 +76,6 @@ ATTR_WEATHER_CODE = "weather_code"
 ATTR_APPARENT_TEMPERATURE = "apparent_temperature"
 ATTR_UV_INDEX = "uv_index"
 ATTR_UV_INDEX_MAX = "uv_index_max"
-ATTR_RADOLAN_PRECIPITATION = "radolan_precipitation"
 ATTR_CONDITION = "condition"
 ATTR_STATION_NAME = "station_name"
 ATTR_STATION_ID = "station_id"
@@ -88,11 +86,6 @@ ATTR_FRAME_ERROR = "frame_error"
 ATTR_WARNING_LEVEL = "warning_level"
 ATTR_WARNING_HEADLINE = "warning_headline"
 ATTR_WARNING_COUNT = "warning_count"
-ATTR_AQI_EUROPEAN = "aqi_european"
-ATTR_AQI_US = "aqi_us"
-ATTR_PM2_5 = "pm2_5"
-ATTR_PM10 = "pm10"
-ATTR_NITROGEN_DIOXIDE = "nitrogen_dioxide"
 
 
 SENSOR_TYPES = {
@@ -180,12 +173,6 @@ SENSOR_TYPES = {
         "device_class": None,
         "state_class": "measurement",
     },
-    "snow_depth": {
-        "unit": "cm",
-        "icon": "mdi:snowflake",
-        "device_class": None,
-        "state_class": "measurement",
-    },
     "rain_24h": {
         "unit": "mm",
         "icon": "mdi:weather-rainy",
@@ -240,12 +227,6 @@ SENSOR_TYPES = {
         "device_class": None,
         "state_class": "measurement",
     },
-    "radolan_precipitation": {
-        "unit": "mm/h",
-        "icon": "mdi:weather-rainy",
-        "device_class": "precipitation_intensity",
-        "state_class": "measurement",
-    },
     "condition": {
         "unit": None,
         "icon": "mdi:weather-cloudy",
@@ -286,60 +267,6 @@ SENSOR_TYPES = {
         "unit": None,
         "icon": "mdi:alert-box",
         "device_class": None,
-        "state_class": "measurement",
-    },
-    "aqi_european": {
-        "unit": "EAQI",
-        "icon": "mdi:air-filter",
-        "device_class": None,
-        "state_class": "measurement",
-    },
-    "aqi_us": {
-        "unit": "USAQI",
-        "icon": "mdi:air-filter",
-        "device_class": None,
-        "state_class": "measurement",
-    },
-    "pm2_5": {
-        "unit": "µg/m³",
-        "icon": "mdi:blur",
-        "device_class": "pm25",
-        "state_class": "measurement",
-    },
-    "pm10": {
-        "unit": "µg/m³",
-        "icon": "mdi:blur",
-        "device_class": "pm10",
-        "state_class": "measurement",
-    },
-    "nitrogen_dioxide": {
-        "unit": "µg/m³",
-        "icon": "mdi:chemical-weapon",
-        "device_class": "nitrogen_dioxide",
-        "state_class": "measurement",
-    },
-    "ozone": {
-        "unit": "DU",
-        "icon": "mdi:weather-sunny",
-        "device_class": None,
-        "state_class": "measurement",
-    },
-    "soil_temp_2cm": {
-        "unit": "°C",
-        "icon": "mdi:thermometer",
-        "device_class": "temperature",
-        "state_class": "measurement",
-    },
-    "soil_temp_5cm": {
-        "unit": "°C",
-        "icon": "mdi:thermometer",
-        "device_class": "temperature",
-        "state_class": "measurement",
-    },
-    "soil_temp_10cm": {
-        "unit": "°C",
-        "icon": "mdi:thermometer",
-        "device_class": "temperature",
         "state_class": "measurement",
     },
 }
@@ -593,5 +520,7 @@ def mercator_bbox(lon_min: float, lat_min: float, lon_max: float, lat_max: float
 
 RADAR_BBOX_LONLAT = (-2.0, 42.0, 22.0, 60.0)
 RADAR_BBOX_MERCATOR = mercator_bbox(*RADAR_BBOX_LONLAT)
+
+GERMANY_BBOX_LONLAT = (5.0, 46.5, 16.0, 56.0)
 RADAR_IMG_WIDTH = 1200
 RADAR_IMG_HEIGHT = 900

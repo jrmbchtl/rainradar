@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import aiohttp
 import logging
 
-from .const import DWD_OPENDATA, RADAR_BBOX_LONLAT
+from .const import DWD_OPENDATA, GERMANY_BBOX_LONLAT
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,10 +40,10 @@ STATION_PRODUCT_MAP = {
     "VV_Stundenwerte_Beschreibung_Stationen.txt": {"visibility"},
 }
 
-_GERMANY_LAT_MIN = RADAR_BBOX_LONLAT[1] - 0.5
-_GERMANY_LAT_MAX = RADAR_BBOX_LONLAT[3] + 0.5
-_GERMANY_LON_MIN = RADAR_BBOX_LONLAT[0] - 0.5
-_GERMANY_LON_MAX = RADAR_BBOX_LONLAT[2] + 0.5
+_GERMANY_LAT_MIN = GERMANY_BBOX_LONLAT[1] - 0.5
+_GERMANY_LAT_MAX = GERMANY_BBOX_LONLAT[3] + 0.5
+_GERMANY_LON_MIN = GERMANY_BBOX_LONLAT[0] - 0.5
+_GERMANY_LON_MAX = GERMANY_BBOX_LONLAT[2] + 0.5
 
 
 class DWDStation:

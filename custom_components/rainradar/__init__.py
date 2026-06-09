@@ -64,7 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _initial_radar_refresh(coordinator):
     """Run first radar refresh in background so sensors appear immediately."""
     try:
-        await coordinator.async_config_entry_first_refresh()
+        await coordinator.async_refresh()
     except Exception as exc:
         _LOGGER.warning(
             "Initial radar refresh failed; will retry on next interval: %s", exc

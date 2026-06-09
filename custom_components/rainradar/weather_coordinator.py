@@ -302,6 +302,8 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
                     precipitation=precip,
                     temperature=temp,
                 )
+                if loc.get("weather_code") is None and om_wmo is not None:
+                    loc["weather_code"] = om_wmo
 
                 # Apparent temperature
                 if "temperature" in loc:
@@ -340,6 +342,24 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
                         if val is not None:
                             loc["snow_depth"] = val
                             break
+
+                # precip_probability from OM hourly (take first hourly entry)
+                if ("precip_probability" not in loc or loc["precip_probability"] is None) and om_data and "hourly" in om_data:
+                    for h_entry in om_data["hourly"]:
+                        val = h_entry.get("precip_probability")
+                        if val is not None:
+                            loc["precip_probability"] = val
+                            break
+
+                # Defaults for fields that are often None in the data
+                if loc.get("uv_index") is None:
+                    loc["uv_index"] = 0
+                if loc.get("fresh_snow") is None:
+                    loc["fresh_snow"] = 0
+                if loc.get("rain_24h") is None:
+                    loc["rain_24h"] = 0
+                if loc.get("snow_24h") is None:
+                    loc["snow_24h"] = 0
 
             return {
                 "locations": result_locations,

@@ -153,10 +153,6 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return self._loc_data().get("cloud_cover")
 
     @property
-    def native_ozone(self):
-        return self._loc_data().get("ozone")
-
-    @property
     def native_precipitation_unit(self):
         return "mm/h"
 

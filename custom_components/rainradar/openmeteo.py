@@ -27,7 +27,7 @@ async def fetch_openmeteo_weather(
             "temperature_2m,relative_humidity_2m,apparent_temperature,"
             "precipitation,rain,snowfall,weather_code,cloud_cover,"
             "pressure_msl,wind_speed_10m,wind_direction_10m,"
-            "wind_gusts_10m,visibility,dew_point_2m,ozone"
+            "wind_gusts_10m,visibility,dew_point_2m,ozone,uv_index"
         )
         hourly_params = (
             "temperature_2m,precipitation_probability,precipitation,"

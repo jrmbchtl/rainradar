@@ -464,6 +464,10 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                 # Rain slots + rain_2h_total from nowcast radar frames
                 if self._pil_available and frame_urls and frame_urls.get("nowcast"):
                     from PIL import Image
+
+                    def _read_px(p: Path, c: int, r: int) -> tuple[int, int, int, int]:
+                        return Image.open(p).convert("RGBA").getpixel((c, r))
+
                     col, row = latlon_to_radar_pixel(lat, lon)
                     slots: list[dict[str, float]] = []
                     slot_start: float | None = None
@@ -491,8 +495,7 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                             _close_slot(_frame_ts(ts_str))
                             continue
                         try:
-                            img = Image.open(path).convert("RGBA")
-                            r, g, b, a = img.getpixel((col, row))
+                            r, g, b, a = await asyncio.to_thread(_read_px, path, col, row)
                             if a > 0:
                                 frame_ts = _frame_ts(ts_str)
                                 if slot_start is None:

@@ -12,7 +12,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, frames_cache_dir, frames_url_prefix, INTEGRATION_VERSION
+from .const import DOMAIN, frames_cache_dir, frames_url_prefix, INTEGRATION_VERSION, resolve_location_specs
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.WEATHER]
@@ -43,6 +43,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN]["stations"] = stations
 
     await _register_frames_path(hass, entry.entry_id)
+
+    radar_coordinator.data = {
+        "locations": {
+            loc[0]: {
+                "rain_2h_total": 0,
+                "rain_slots": [],
+                "warning_level": 0,
+                "warning_count": 0,
+            }
+            for loc in resolve_location_specs(hass, entry)
+        }
+    }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

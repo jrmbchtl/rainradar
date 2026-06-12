@@ -23,7 +23,6 @@ from .const import (
     ATTR_DEW_POINT,
     ATTR_CLOUD_COVERAGE,
     ATTR_PRECIPITATION,
-    ATTR_PRECIP_INTENSITY,
     ATTR_PRECIP_PROBABILITY,
     ATTR_RAIN_RATE,
     ATTR_SNOW_RATE,
@@ -34,6 +33,7 @@ from .const import (
     ATTR_SUNSHINE_DURATION,
     ATTR_VISIBILITY,
     ATTR_WEATHER_CODE,
+    ATTR_WEATHER_CODE_TEXT,
     ATTR_APPARENT_TEMPERATURE,
     ATTR_UV_INDEX,
     ATTR_UV_INDEX_MAX,
@@ -47,6 +47,8 @@ from .const import (
     ATTR_WARNING_LEVEL,
     ATTR_WARNING_HEADLINE,
     ATTR_WARNING_COUNT,
+    ATTR_RAIN_SLOTS,
+    ATTR_RAIN_2H_TOTAL,
     resolve_location_specs,
 )
 from .weather_coordinator import WeatherDataCoordinator
@@ -62,7 +64,6 @@ SENSOR_KEY_MAP = {
     "wind_direction": ATTR_WIND_DIRECTION,
     "wind_gust": ATTR_WIND_GUST,
     "precipitation": ATTR_PRECIPITATION,
-    "precip_intensity": ATTR_PRECIP_INTENSITY,
     "precip_probability": ATTR_PRECIP_PROBABILITY,
     "rain_rate": ATTR_RAIN_RATE,
     "snow_rate": ATTR_SNOW_RATE,
@@ -73,6 +74,7 @@ SENSOR_KEY_MAP = {
     "sunshine_duration": ATTR_SUNSHINE_DURATION,
     "visibility": ATTR_VISIBILITY,
     "weather_code": ATTR_WEATHER_CODE,
+    "weather_code_text": ATTR_WEATHER_CODE_TEXT,
     "apparent_temperature": ATTR_APPARENT_TEMPERATURE,
     "uv_index": ATTR_UV_INDEX,
     "uv_index_max": ATTR_UV_INDEX_MAX,
@@ -80,6 +82,8 @@ SENSOR_KEY_MAP = {
     "station_name": ATTR_STATION_NAME,
     "station_id": ATTR_STATION_ID,
     "station_distance": ATTR_STATION_DISTANCE,
+    "rain_slots": ATTR_RAIN_SLOTS,
+    "rain_2h_total": ATTR_RAIN_2H_TOTAL,
     "warning_level": ATTR_WARNING_LEVEL,
     "warning_headline": ATTR_WARNING_HEADLINE,
     "warning_count": ATTR_WARNING_COUNT,
@@ -88,13 +92,14 @@ SENSOR_KEY_MAP = {
 CORE_SENSORS = ("temperature", "humidity", "wind_speed", "wind_direction", "condition")
 OPTIONAL_SENSORS = (
     "pressure", "dew_point", "cloud_cover", "wind_gust",
-    "precipitation", "precip_intensity", "precip_probability",
+    "precipitation", "precip_probability",
     "rain_rate", "snow_rate", "fresh_snow",
     "rain_24h", "snow_24h",
     "solar_radiation", "sunshine_duration",
-    "visibility", "weather_code",
+    "visibility", "weather_code", "weather_code_text",
     "apparent_temperature",
     "uv_index", "uv_index_max",
+    "rain_2h_total",
     "warning_level", "warning_headline", "warning_count",
 )
 DEBUG_STATION_SENSORS = ("station_name", "station_id", "station_distance")
@@ -157,9 +162,13 @@ async def async_setup_entry(
                     sensor_key,
                 )
             )
+        entities.append(
+            RainradarRainSlotsSensor(
+                radar_coordinator, entry, loc_key, loc_name, slug,
+            )
+        )
+
         for sensor_key in DEBUG_STATION_SENSORS:
-            if sensor_key not in SENSOR_TYPES:
-                continue
             desc = SENSOR_TYPES[sensor_key]
             entities.append(
                 RainradarDebugStationSensor(
@@ -415,6 +424,48 @@ class RainradarDebugStationSensor(CoordinatorEntity, SensorEntity):
         if field is None:
             return None
         return loc_data.get(field)
+
+
+class RainradarRainSlotsSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        radar_coordinator: RadarDataCoordinator,
+        entry: ConfigEntry,
+        loc_key: str,
+        loc_name: str,
+        slug: str,
+    ) -> None:
+        super().__init__(radar_coordinator)
+        self._loc_key = loc_key
+        self._loc_name = loc_name
+        self._slug = slug
+        self._attr_unique_id = f"{DOMAIN}_{slug}_rain_slots"
+        self._attr_device_info = _common_device_info(
+            entry, slug, f"Rainradar {loc_name}", "Weather Station"
+        )
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data
+        if not data:
+            return None
+        loc_data = data.get("locations", {}).get(self._loc_key, {})
+        slots = loc_data.get("rain_slots", [])
+        return len(slots) if isinstance(slots, list) else 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        loc_data = data.get("locations", {}).get(self._loc_key, {})
+        slots = loc_data.get("rain_slots", [])
+        if not isinstance(slots, list):
+            slots = []
+        next_ts = slots[0].get("start") if slots else None
+        return {"slots": slots, "next_rain": next_ts}
 
 
 class RainradarHealthSensor(CoordinatorEntity, SensorEntity):

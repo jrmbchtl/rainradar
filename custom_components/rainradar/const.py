@@ -51,7 +51,7 @@ DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.5.17"
+INTEGRATION_VERSION = "0.5.18"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -62,7 +62,9 @@ ATTR_PRESSURE = "pressure"
 ATTR_DEW_POINT = "dew_point"
 ATTR_CLOUD_COVERAGE = "cloud_cover"
 ATTR_PRECIPITATION = "precipitation"
-ATTR_PRECIP_INTENSITY = "precip_intensity"
+ATTR_WEATHER_CODE_TEXT = "weather_code_text"
+ATTR_RAIN_SLOTS = "rain_slots"
+ATTR_RAIN_2H_TOTAL = "rain_2h_total"
 ATTR_PRECIP_PROBABILITY = "precip_probability"
 ATTR_RAIN_RATE = "rain_rate"
 ATTR_SNOW_RATE = "snow_rate"
@@ -143,12 +145,6 @@ SENSOR_TYPES = {
         "device_class": "precipitation_intensity",
         "state_class": "measurement",
     },
-    "precip_intensity": {
-        "unit": "mm/h",
-        "icon": "mdi:weather-rainy",
-        "device_class": "precipitation_intensity",
-        "state_class": "measurement",
-    },
     "precip_probability": {
         "unit": "%",
         "icon": "mdi:water-percent",
@@ -180,7 +176,7 @@ SENSOR_TYPES = {
         "state_class": "total",
     },
     "snow_24h": {
-        "unit": "mm",
+        "unit": "cm",
         "icon": "mdi:snowflake",
         "device_class": "precipitation",
         "state_class": "total",
@@ -204,6 +200,12 @@ SENSOR_TYPES = {
         "state_class": "measurement",
     },
     "weather_code": {
+        "unit": None,
+        "icon": "mdi:weather-cloudy",
+        "device_class": None,
+        "state_class": None,
+    },
+    "weather_code_text": {
         "unit": None,
         "icon": "mdi:weather-cloudy",
         "device_class": None,
@@ -249,6 +251,18 @@ SENSOR_TYPES = {
         "unit": "km",
         "icon": "mdi:map-marker-distance",
         "device_class": "distance",
+        "state_class": "measurement",
+    },
+    "rain_slots": {
+        "unit": None,
+        "icon": "mdi:weather-rainy",
+        "device_class": None,
+        "state_class": None,
+    },
+    "rain_2h_total": {
+        "unit": "mm",
+        "icon": "mdi:weather-rainy",
+        "device_class": "precipitation",
         "state_class": "measurement",
     },
     "warning_level": {
@@ -325,6 +339,158 @@ for _range, _cond in [
         DWD_WW_TO_HA[_code] = _cond
 
 DWD_WW_TO_HA["exceptional"] = "exceptional"
+
+# DWD WW code to human-readable English text
+# Based on WMO code table 4677 (present weather)
+WW_CODE_TO_TEXT = {
+    0: "Clear sky",
+    1: "Clouds dissolving",
+    2: "Sky unchanged",
+    3: "Clouds forming",
+    4: "Smoke haze",
+    5: "Haze",
+    6: "Widespread dust",
+    7: "Dust raised by wind",
+    8: "Dust whirls",
+    9: "Duststorm within sight",
+    10: "Mist",
+    11: "Shallow fog patches",
+    12: "Continuous shallow fog",
+    13: "Lightning visible",
+    14: "Precipitation within sight",
+    15: "Distant precipitation",
+    16: "Nearby precipitation",
+    17: "Thunderstorm without rain",
+    18: "Squalls",
+    19: "Funnel clouds",
+    20: "Recent drizzle",
+    21: "Recent rain",
+    22: "Recent snow",
+    23: "Recent rain and snow",
+    24: "Recent freezing drizzle",
+    25: "Recent rain showers",
+    26: "Recent snow showers",
+    27: "Recent hail showers",
+    28: "Recent fog",
+    29: "Recent thunderstorm",
+    30: "Slight duststorm",
+    31: "Severe duststorm",
+    32: "Slight sandstorm",
+    33: "Severe sandstorm",
+    34: "Slight drifting snow",
+    35: "Severe drifting snow",
+    36: "Slight blowing snow",
+    37: "Severe blowing snow",
+    38: "Slight blowing dust",
+    39: "Severe blowing dust",
+    40: "Fog at distance",
+    41: "Fog in patches",
+    42: "Fog thinning, sky visible",
+    43: "Fog thinning, sky hidden",
+    44: "Fog, sky visible",
+    45: "Fog, sky hidden",
+    46: "Fog thickening, sky visible",
+    47: "Fog thickening, sky hidden",
+    48: "Fog with rime, sky visible",
+    49: "Fog with rime, sky hidden",
+    50: "Slight drizzle",
+    51: "Moderate drizzle",
+    52: "Heavy drizzle",
+    53: "Slight freezing drizzle",
+    54: "Moderate freezing drizzle",
+    55: "Heavy freezing drizzle",
+    56: "Slight freezing rain",
+    57: "Moderate freezing rain",
+    58: "Slight rain and drizzle",
+    59: "Moderate rain and drizzle",
+    60: "Slight rain",
+    61: "Moderate rain",
+    62: "Heavy rain",
+    63: "Slight freezing rain",
+    64: "Moderate freezing rain",
+    65: "Heavy freezing rain",
+    66: "Slight freezing rain",
+    67: "Moderate freezing rain",
+    68: "Slight rain and snow",
+    69: "Moderate rain and snow",
+    70: "Slight snowfall",
+    71: "Moderate snowfall",
+    72: "Heavy snowfall",
+    73: "Slight snow grains",
+    74: "Moderate snow grains",
+    75: "Heavy snow grains",
+    76: "Diamond dust",
+    77: "Snow grains",
+    78: "Ice crystals",
+    79: "Ice pellets",
+    80: "Slight rain showers",
+    81: "Moderate rain showers",
+    82: "Heavy rain showers",
+    83: "Slight rain and snow showers",
+    84: "Moderate rain and snow showers",
+    85: "Slight snow showers",
+    86: "Heavy snow showers",
+    87: "Slight snow pellet showers",
+    88: "Heavy snow pellet showers",
+    89: "Slight hail showers",
+    90: "Heavy hail showers",
+    91: "Slight rain with thunder",
+    92: "Heavy rain with thunder",
+    93: "Slight snow with thunder",
+    94: "Heavy snow with thunder",
+    95: "Thunderstorm",
+    96: "Thunderstorm with slight hail",
+    97: "Heavy thunderstorm",
+    98: "Thunderstorm with duststorm",
+    99: "Thunderstorm with heavy hail",
+}
+
+# DWD color ramp for radar precipitation intensity (RGB → mm/h)
+# Key colors from the DWD Niederschlagsradar WMS color ramp
+PRECIP_COLORS = [
+    ((0, 255, 255), 0.15),
+    ((0, 200, 255), 0.3),
+    ((0, 200, 0), 0.7),
+    ((0, 150, 0), 1.5),
+    ((0, 100, 0), 2.5),
+    ((200, 200, 0), 3.5),
+    ((255, 255, 0), 5.0),
+    ((255, 200, 0), 7.0),
+    ((255, 150, 0), 10.0),
+    ((255, 100, 0), 15.0),
+    ((255, 0, 0), 30.0),
+    ((200, 0, 0), 50.0),
+    ((255, 0, 255), 87.0),
+    ((200, 0, 200), 110.0),
+    ((100, 0, 200), 130.0),
+    ((0, 0, 255), 150.0),
+]
+
+
+def pixel_intensity(r: int, g: int, b: int) -> float:
+    """Estimate precipitation intensity (mm/h) from a radar pixel RGB value."""
+    best = 0.1
+    min_dist = float("inf")
+    for (cr, cg, cb), val in PRECIP_COLORS:
+        dist = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+        if dist < min_dist:
+            min_dist = dist
+            best = val
+    return best
+
+
+def latlon_to_radar_pixel(lat: float, lon: float) -> tuple[int, int]:
+    """Convert (lat, lon) to (col, row) in the 1200×900 radar composite image."""
+    x = lon * 20037508.342789244 / 180.0
+    y = math.log(math.tan(math.pi / 4 + lat * math.pi / 360.0)) * 6378137.0
+    lo_min, la_min, lo_max, la_max = RADAR_BBOX_LONLAT
+    x_min = lo_min * 20037508.342789244 / 180.0
+    x_max = lo_max * 20037508.342789244 / 180.0
+    y_min = math.log(math.tan(math.pi / 4 + la_min * math.pi / 360.0)) * 6378137.0
+    y_max = math.log(math.tan(math.pi / 4 + la_max * math.pi / 360.0)) * 6378137.0
+    col = int((x - x_min) / (x_max - x_min) * RADAR_IMG_WIDTH)
+    row = int((y_max - y) / (y_max - y_min) * RADAR_IMG_HEIGHT)
+    return max(0, min(col, RADAR_IMG_WIDTH - 1)), max(0, min(row, RADAR_IMG_HEIGHT - 1))
 
 
 # Open-Meteo WMO weather code to HA condition mapping

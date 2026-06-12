@@ -167,6 +167,7 @@ async def fetch_openmeteo_weather(
                 "temperature_2m_max": "temperature",
                 "temperature_2m_min": "templow",
                 "precipitation_sum": "precipitation",
+                "snowfall_sum": "snowfall_sum",
                 "precipitation_probability_max": "precip_probability",
                 "wind_speed_10m_max": "wind_speed",
                 "wind_direction_10m_dominant": "wind_direction",

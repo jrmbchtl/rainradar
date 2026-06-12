@@ -4,7 +4,7 @@ import asyncio
 import io
 import logging
 import zipfile
-from datetime import timedelta, datetime, timezone
+from datetime import date, timedelta, datetime, timezone
 from typing import Any
 
 import aiohttp
@@ -23,6 +23,7 @@ from .const import (
     apparent_temperature,
     resolve_condition,
     resolve_location_specs,
+    WW_CODE_TO_TEXT,
     CDC_10MIN_PRODUCTS,
     CDC_10MIN_FILENAMES,
     CDC_HOURLY_PRODUCTS,
@@ -59,6 +60,7 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
         )
         self._session = session
         self._stations = stations
+        self._uv_max_date: dict[str, date] = {}
 
     async def _get_zip_text(self, base_url: str, path: str, filename: str) -> str | None:
         url = f"{base_url}/{path}/{filename}"
@@ -154,6 +156,10 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
                                         raw = float(val)
                                         if col == "V_V":
                                             raw = raw / 10.0  # 0.1 km → km
+                                        if col == "N":
+                                            if raw < 0:
+                                                continue
+                                            raw = raw * 12.5  # oktas (0-8) → percent (0-100)
                                         result[key] = round(raw, 1)
                                     except (ValueError, TypeError):
                                         pass
@@ -162,8 +168,6 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
 
         if "wind_speed" in result:
             result["wind_speed"] = round(result["wind_speed"] * 3.6, 1)
-        if "precipitation" in result:
-            result["precip_intensity"] = result["precipitation"]
         return result
 
     async def _fetch_daily_data(self, station_id: str) -> dict[str, Any]:
@@ -187,7 +191,12 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
                             val = last[idx].strip()
                             if val and val not in ("-999", "999.0", "-999.0"):
                                 try:
-                                    result[key] = round(float(val), 1)
+                                    raw = float(val)
+                                    if col == "NM":
+                                        if raw < 0:
+                                            continue
+                                        raw = raw * 12.5  # oktas (0-8) → percent (0-100)
+                                    result[key] = round(raw, 1)
                                 except (ValueError, TypeError):
                                     pass
             except Exception as exc:
@@ -313,6 +322,22 @@ class WeatherDataCoordinator(DataUpdateCoordinator):
                 )
                 if loc.get("weather_code") is None and om_wmo is not None:
                     loc["weather_code"] = om_wmo
+                wc = loc.get("weather_code")
+                loc["weather_code_text"] = WW_CODE_TO_TEXT.get(int(wc)) if wc is not None else None
+
+                # UV max — only update once per day
+                today = datetime.now(timezone.utc).date()
+                if "uv_index_max" in om_data and self._uv_max_date.get(loc_key) != today:
+                    loc["uv_index_max"] = om_data["uv_index_max"]
+                    self._uv_max_date[loc_key] = today
+
+                # rain_24h / snow_24h from Open-Meteo daily forecast (today's sum)
+                if om_data and "forecast_daily" in om_data and om_data["forecast_daily"]:
+                    today_fc = om_data["forecast_daily"][0]
+                    if "precipitation" in today_fc and today_fc["precipitation"] is not None:
+                        loc["rain_24h"] = today_fc["precipitation"]
+                    if "snowfall_sum" in today_fc and today_fc["snowfall_sum"] is not None:
+                        loc["snow_24h"] = today_fc["snowfall_sum"]
 
                 # Apparent temperature (only compute Steadman if OM didn't provide)
                 if ("apparent_temperature" not in loc or loc["apparent_temperature"] is None) and "temperature" in loc:

@@ -36,6 +36,8 @@ from .const import (
     frames_url_prefix,
     safe_frame_filename,
     resolve_location_specs,
+    latlon_to_radar_pixel,
+    pixel_intensity,
 )
 from .station_mapping import find_nearest_stations, DWDStation
 from .mosmix import fetch_mosmix_forecast
@@ -458,6 +460,54 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                     if headline:
                         radar_locations[loc_key]["warning_headline"] = headline
                     radar_locations[loc_key]["warning_count"] = len(matching)
+
+                # Rain slots + rain_2h_total from nowcast radar frames
+                if self._pil_available and frame_urls and frame_urls.get("nowcast"):
+                    from PIL import Image
+                    col, row = latlon_to_radar_pixel(lat, lon)
+                    slots: list[dict[str, float]] = []
+                    slot_start: float | None = None
+                    total_mm = 0.0
+
+                    def _frame_ts(t: str) -> float:
+                        return datetime.strptime(
+                            t.replace("Z", "").replace(":", "-")[:16],
+                            "%Y-%m-%dT%H-%M",
+                        ).replace(tzinfo=timezone.utc).timestamp()
+
+                    def _close_slot(end: float) -> None:
+                        nonlocal slot_start
+                        if slot_start is not None:
+                            slots.append({"start": slot_start, "end": end})
+                            slot_start = None
+
+                    for frame in frame_urls["nowcast"]:
+                        ts_str = frame.get("ts", "")
+                        if not ts_str:
+                            _close_slot(0)
+                            continue
+                        path = self._frame_path(DWD_WMS_RADAR_LAYER, ts_str)
+                        if not path.is_file():
+                            _close_slot(_frame_ts(ts_str))
+                            continue
+                        try:
+                            img = Image.open(path).convert("RGBA")
+                            r, g, b, a = img.getpixel((col, row))
+                            if a > 0:
+                                frame_ts = _frame_ts(ts_str)
+                                if slot_start is None:
+                                    slot_start = frame_ts
+                                total_mm += pixel_intensity(r, g, b) * (FRAME_INTERVAL_MIN / 60.0)
+                            else:
+                                _close_slot(_frame_ts(ts_str))
+                        except Exception:
+                            _close_slot(0)
+                    _close_slot(_frame_ts(frame_urls["nowcast"][-1]["ts"]) + FRAME_INTERVAL_MIN * 60)
+                    radar_locations[loc_key]["rain_slots"] = slots
+                    radar_locations[loc_key]["rain_2h_total"] = round(total_mm, 2)
+                else:
+                    radar_locations[loc_key]["rain_slots"] = []
+                    radar_locations[loc_key]["rain_2h_total"] = 0
 
             for loc_key in radar_locations:
                 radar_locations[loc_key].setdefault("warning_level", 0)

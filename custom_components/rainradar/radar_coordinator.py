@@ -41,7 +41,7 @@ from .const import (
     ATTR_TEMPERATURE_FORECAST,
 )
 from .station_mapping import find_nearest_stations, DWDStation
-from .mosmix import fetch_mosmix_forecast, get_mosmix_stations
+from .mosmix import fetch_mosmix_forecast, get_mosmix_station_ids
 from .radolan import fetch_radolan_grid, get_radolan_value
 from .iconeu import fetch_icon_eu_precip
 from .openmeteo import fetch_openmeteo_weather, fetch_openmeteo_air_quality
@@ -375,14 +375,16 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                 mosmix_result: dict[str, list[dict]] = {}
                 temp_4h: dict[str, list[dict]] = {}
                 now_ts = datetime.now(timezone.utc).timestamp()
-                mosmix_stations = get_mosmix_stations()
                 for loc_key, _nm, _se, lat, lon, _sl in location_specs:
+                    mosmix_ids = get_mosmix_station_ids()
                     found = False
-                    candidates = (
-                        find_nearest_stations(lat, lon, mosmix_stations, n=3)
-                        if mosmix_stations
-                        else find_nearest_stations(lat, lon, self._stations, n=3)
-                    )
+                    if mosmix_ids:
+                        all_candidates = find_nearest_stations(lat, lon, self._stations, n=20)
+                        candidates = [
+                            (s, d) for s, d in all_candidates if s.station_id in mosmix_ids
+                        ][:3]
+                    else:
+                        candidates = find_nearest_stations(lat, lon, self._stations, n=3)
                     for station, _dist in candidates:
                         try:
                             forecast = await self._fetch_mosmix(station.station_id)
@@ -393,7 +395,7 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                             temp_4h[loc_key] = self._interpolate_mosmix_4h(forecast, now_ts)
                             found = True
                             break
-                    if not found and not mosmix_stations:
+                    if not found and not get_mosmix_station_ids():
                         _LOGGER.warning(
                             "No MOSMIX-S forecast for %s (MOSMIX cache not yet populated)", _nm
                         )

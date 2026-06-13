@@ -38,6 +38,7 @@ from .const import (
     resolve_location_specs,
     latlon_to_radar_pixel,
     pixel_intensity,
+    ATTR_TEMPERATURE_FORECAST,
 )
 from .station_mapping import find_nearest_stations, DWDStation
 from .mosmix import fetch_mosmix_forecast
@@ -312,6 +313,38 @@ class RadarDataCoordinator(DataUpdateCoordinator):
             self._mosmix_last_update[station_id] = now_ts
         return forecast
 
+    @staticmethod
+    def _interpolate_mosmix_4h(
+        forecasts: list[dict],
+        now_ts: float,
+    ) -> list[dict]:
+        """Linearly interpolate hourly MOSMIX temperatures to 15-min steps for 4h."""
+        if not forecasts:
+            return []
+        sorted_fc = sorted(
+            (f for f in forecasts if f.get("temperature") is not None),
+            key=lambda x: x["ts"],
+        )
+        end_ts = now_ts + 4 * 3600
+        result = []
+        step = 15 * 60
+        for slot_start in range(int(now_ts), int(end_ts), step):
+            slot_ts = float(slot_start)
+            left = None
+            right = None
+            for f in sorted_fc:
+                ts = f["ts"]
+                temp = f["temperature"]
+                if ts <= slot_ts:
+                    left = (ts, temp)
+                if ts >= slot_ts and right is None:
+                    right = (ts, temp)
+            if left is not None and right is not None and right[0] != left[0]:
+                frac = (slot_ts - left[0]) / (right[0] - left[0])
+                t = round(left[1] + (right[1] - left[1]) * frac, 1)
+                result.append({"time": slot_ts, "temperature": t})
+        return result
+
     async def _fetch_radolan_for_location(self, lat: float, lon: float) -> float | None:
         now_ts = datetime.now(timezone.utc).timestamp()
         if self._radolan_grid is None or (now_ts - self._radolan_last_update) > 600:
@@ -338,8 +371,9 @@ class RadarDataCoordinator(DataUpdateCoordinator):
 
             async def _try_mosmix():
                 if not enable_forecast:
-                    return None
-                result: dict[str, list[dict]] = {}
+                    return None, None
+                mosmix_result: dict[str, list[dict]] = {}
+                temp_4h: dict[str, list[dict]] = {}
                 now_ts = datetime.now(timezone.utc).timestamp()
                 for loc_key, _nm, _se, lat, lon, _sl in location_specs:
                     for station, _dist in find_nearest_stations(lat, lon, self._stations, n=3):
@@ -348,16 +382,17 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                         except Exception:
                             continue
                         if forecast:
-                            result[loc_key] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts]
+                            mosmix_result[loc_key] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts]
+                            temp_4h[loc_key] = self._interpolate_mosmix_4h(forecast, now_ts)
                             break
-                return result if result else None
+                return (mosmix_result or None, temp_4h or None)
 
             mosmix_task = asyncio.create_task(_try_mosmix())
 
             # Evict old frames while waiting
             await self._evict_old_frames()
             frame_urls = await frame_task
-            mosmix_by_location = await mosmix_task
+            mosmix_by_location, temp_forecast_4h = await mosmix_task
 
             result: dict[str, Any] = {
                 "radar_frames": frame_urls,
@@ -511,6 +546,10 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                 else:
                     radar_locations[loc_key]["rain_slots"] = []
                     radar_locations[loc_key]["rain_2h_total"] = 0
+
+                # 4h temperature forecast from MOSMIX interpolation
+                if temp_forecast_4h and loc_key in temp_forecast_4h:
+                    radar_locations[loc_key][ATTR_TEMPERATURE_FORECAST] = temp_forecast_4h[loc_key]
 
             for loc_key in radar_locations:
                 radar_locations[loc_key].setdefault("warning_level", 0)

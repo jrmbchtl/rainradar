@@ -51,7 +51,7 @@ DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.5.19"
+INTEGRATION_VERSION = "0.5.20"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -88,12 +88,19 @@ ATTR_FRAME_ERROR = "frame_error"
 ATTR_WARNING_LEVEL = "warning_level"
 ATTR_WARNING_HEADLINE = "warning_headline"
 ATTR_WARNING_COUNT = "warning_count"
+ATTR_TEMPERATURE_FORECAST = "temperature_forecast_4h"
 
 
 SENSOR_TYPES = {
     "temperature": {
         "unit": "°C",
         "icon": "mdi:thermometer",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
+    "temperature_forecast_4h": {
+        "unit": "°C",
+        "icon": "mdi:thermometer-chevron-up",
         "device_class": "temperature",
         "state_class": "measurement",
     },

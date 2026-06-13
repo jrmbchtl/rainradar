@@ -49,6 +49,7 @@ from .const import (
     ATTR_WARNING_COUNT,
     ATTR_RAIN_SLOTS,
     ATTR_RAIN_2H_TOTAL,
+    ATTR_TEMPERATURE_FORECAST,
     resolve_location_specs,
 )
 from .weather_coordinator import WeatherDataCoordinator
@@ -164,6 +165,12 @@ async def async_setup_entry(
             )
         entities.append(
             RainradarRainSlotsSensor(
+                radar_coordinator, entry, loc_key, loc_name, slug,
+            )
+        )
+
+        entities.append(
+            RainradarTemperatureForecastSensor(
                 radar_coordinator, entry, loc_key, loc_name, slug,
             )
         )
@@ -466,6 +473,53 @@ class RainradarRainSlotsSensor(CoordinatorEntity, SensorEntity):
             slots = []
         next_ts = slots[0].get("start") if slots else None
         return {"slots": slots, "next_rain": next_ts}
+
+
+class RainradarTemperatureForecastSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        radar_coordinator: RadarDataCoordinator,
+        entry: ConfigEntry,
+        loc_key: str,
+        loc_name: str,
+        slug: str,
+    ) -> None:
+        super().__init__(radar_coordinator)
+        self._loc_key = loc_key
+        self._loc_name = loc_name
+        self._slug = slug
+        self._attr_unique_id = f"{DOMAIN}_{slug}_temperature_forecast_4h"
+        self._attr_device_info = _common_device_info(
+            entry, slug, f"Rainradar {loc_name}", "Weather Station"
+        )
+        self._attr_native_unit_of_measurement = "°C"
+        self._attr_icon = "mdi:thermometer-chevron-up"
+        self._attr_device_class = "temperature"
+        self._attr_state_class = "measurement"
+
+    @property
+    def native_value(self):
+        data = self.coordinator.data
+        if not data:
+            return None
+        loc_data = data.get("locations", {}).get(self._loc_key, {})
+        forecast = loc_data.get(ATTR_TEMPERATURE_FORECAST, [])
+        if isinstance(forecast, list) and len(forecast) > 0:
+            return forecast[0].get("temperature")
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        data = self.coordinator.data
+        if not data:
+            return None
+        loc_data = data.get("locations", {}).get(self._loc_key, {})
+        forecast = loc_data.get(ATTR_TEMPERATURE_FORECAST, [])
+        if not isinstance(forecast, list):
+            forecast = []
+        return {"forecast": forecast}
 
 
 class RainradarHealthSensor(CoordinatorEntity, SensorEntity):

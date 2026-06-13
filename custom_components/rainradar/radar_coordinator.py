@@ -310,15 +310,15 @@ class RadarDataCoordinator(DataUpdateCoordinator):
         return forecast
 
     @staticmethod
-    def _interpolate_mosmix_4h(
-        forecasts: list[dict],
+    def _interpolate_hourly_to_4h(
+        entries: list[dict],
         now_ts: float,
     ) -> list[dict]:
-        """Linearly interpolate hourly MOSMIX temperatures to 15-min steps for 4h."""
-        if not forecasts:
+        """Linearly interpolate hourly {ts, temperature} entries to 15-min steps for 4h."""
+        if not entries:
             return []
         sorted_fc = sorted(
-            (f for f in forecasts if f.get("temperature") is not None),
+            (f for f in entries if f.get("temperature") is not None),
             key=lambda x: x["ts"],
         )
         end_ts = now_ts + 4 * 3600
@@ -359,28 +359,24 @@ class RadarDataCoordinator(DataUpdateCoordinator):
 
             async def _try_mosmix():
                 if not enable_forecast:
-                    return None, None
-
-                # Ensure MOSMIX KML cache is populated before the location loop
+                    return None
                 if not get_mosmix_station_ids() and self._stations:
                     try:
                         await self._fetch_mosmix(self._stations[0].station_id)
                     except Exception:
                         pass
-
                 mosmix_result: dict[str, list[dict]] = {}
-                temp_4h: dict[str, list[dict]] = {}
                 now_ts = datetime.now(timezone.utc).timestamp()
                 for loc_key, _nm, _se, lat, lon, _sl in location_specs:
                     mosmix_ids = get_mosmix_station_ids()
-                    found = False
-                    if mosmix_ids:
-                        all_candidates = find_nearest_stations(lat, lon, self._stations, n=20)
-                        candidates = [
-                            (s, d) for s, d in all_candidates if s.station_id in mosmix_ids
+                    candidates = (
+                        [
+                            (s, d) for s, d in find_nearest_stations(lat, lon, self._stations, n=20)
+                            if s.station_id in mosmix_ids
                         ][:3]
-                    else:
-                        candidates = find_nearest_stations(lat, lon, self._stations, n=3)
+                        if mosmix_ids
+                        else find_nearest_stations(lat, lon, self._stations, n=3)
+                    )
                     for station, _dist in candidates:
                         try:
                             forecast = await self._fetch_mosmix(station.station_id)
@@ -388,21 +384,37 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                             continue
                         if forecast:
                             mosmix_result[loc_key] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts]
-                            temp_4h[loc_key] = self._interpolate_mosmix_4h(forecast, now_ts)
-                            found = True
                             break
-                    if not found:
-                        _LOGGER.warning(
-                            "No MOSMIX-S forecast for %s (0/3 nearest MOSMIX stations had data)", _nm
-                        )
-                return (mosmix_result or None, temp_4h or None)
+                return mosmix_result or None
+
+            async def _try_om_temp_forecast():
+                if not enable_forecast or not location_specs:
+                    return None
+                result: dict[str, list[dict]] = {}
+                now_ts = datetime.now(timezone.utc).timestamp()
+                for loc_key, _nm, _se, lat, lon, _sl in location_specs:
+                    try:
+                        om_data = await fetch_openmeteo_weather(self._session, lat, lon)
+                        if om_data and "hourly" in om_data:
+                            temps = [
+                                {"ts": h["ts"], "temperature": h["temperature"]}
+                                for h in om_data["hourly"]
+                                if h.get("ts") is not None and h.get("temperature") is not None
+                            ]
+                            if len(temps) >= 2:
+                                result[loc_key] = self._interpolate_hourly_to_4h(temps, now_ts)
+                                break
+                    except Exception:
+                        continue
+                return result or None
 
             mosmix_task = asyncio.create_task(_try_mosmix())
+            om_temp_task = asyncio.create_task(_try_om_temp_forecast())
 
-            # Evict old frames while waiting
             await self._evict_old_frames()
             frame_urls = await frame_task
-            mosmix_by_location, temp_forecast_4h = await mosmix_task
+            mosmix_by_location = await mosmix_task
+            temp_forecast_4h = await om_temp_task
 
             result: dict[str, Any] = {
                 "radar_frames": frame_urls,
@@ -539,7 +551,7 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                     radar_locations[loc_key]["rain_slots"] = []
                     radar_locations[loc_key]["rain_2h_total"] = 0
 
-                # 4h temperature forecast from MOSMIX interpolation
+                # 4h temperature forecast from Open-Meteo hourly interpolation
                 if temp_forecast_4h and loc_key in temp_forecast_4h:
                     radar_locations[loc_key][ATTR_TEMPERATURE_FORECAST] = temp_forecast_4h[loc_key]
 

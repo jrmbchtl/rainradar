@@ -376,6 +376,7 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                 temp_4h: dict[str, list[dict]] = {}
                 now_ts = datetime.now(timezone.utc).timestamp()
                 for loc_key, _nm, _se, lat, lon, _sl in location_specs:
+                    found = False
                     for station, _dist in find_nearest_stations(lat, lon, self._stations, n=3):
                         try:
                             forecast = await self._fetch_mosmix(station.station_id)
@@ -384,7 +385,12 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                         if forecast:
                             mosmix_result[loc_key] = [fc for fc in forecast if fc.get("ts", 0) >= now_ts]
                             temp_4h[loc_key] = self._interpolate_mosmix_4h(forecast, now_ts)
+                            found = True
                             break
+                    if not found:
+                        _LOGGER.warning(
+                            "No MOSMIX-S forecast for %s (0/3 nearest stations had data)", _nm
+                        )
                 return (mosmix_result or None, temp_4h or None)
 
             mosmix_task = asyncio.create_task(_try_mosmix())

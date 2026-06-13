@@ -129,7 +129,7 @@ async def fetch_mosmix_forecast(
             _kml_cache[run_key] = (now.timestamp(), stations)
 
         if station_id not in stations:
-            _LOGGER.debug("Station %s not found in MOSMIX-S", station_id)
+            _LOGGER.warning("Station %s not found in MOSMIX-S", station_id)
             return None
 
         raw_fc = stations[station_id]["forecasts"]

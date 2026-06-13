@@ -16,7 +16,6 @@ from .const import (
     CONF_DEVICE_TRACKERS,
     CONF_ZONES,
     CONF_ENABLE_FORECAST,
-    CONF_ENABLE_RADOLAN,
     CONF_ENABLE_ICON_EU,
     CONF_ENABLE_UV,
     CONF_ENABLE_WARNINGS,
@@ -42,7 +41,7 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if legacy_tracker and not options[CONF_DEVICE_TRACKERS]:
                 options[CONF_DEVICE_TRACKERS] = [legacy_tracker]
             options.setdefault(CONF_ENABLE_FORECAST, True)
-            options.setdefault(CONF_ENABLE_RADOLAN, True)
+
             options.setdefault(CONF_ENABLE_ICON_EU, True)
             options.setdefault(CONF_ENABLE_UV, True)
             hass.config_entries.async_update_entry(
@@ -72,7 +71,6 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                     ),
                     CONF_ENABLE_FORECAST: user_input.get(CONF_ENABLE_FORECAST, True),
-                    CONF_ENABLE_RADOLAN: user_input.get(CONF_ENABLE_RADOLAN, True),
                     CONF_ENABLE_ICON_EU: user_input.get(CONF_ENABLE_ICON_EU, True),
                     CONF_ENABLE_UV: user_input.get(CONF_ENABLE_UV, True),
                     CONF_ENABLE_WARNINGS: user_input.get(CONF_ENABLE_WARNINGS, True),
@@ -96,7 +94,6 @@ class RainradarConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
                     ): vol.All(vol.Coerce(int), vol.Range(min=60, max=3600)),
                     vol.Optional(CONF_ENABLE_FORECAST, default=True): bool,
-                    vol.Optional(CONF_ENABLE_RADOLAN, default=True): bool,
                     vol.Optional(CONF_ENABLE_ICON_EU, default=True): bool,
                     vol.Optional(CONF_ENABLE_UV, default=True): bool,
                     vol.Optional(CONF_ENABLE_WARNINGS, default=True): bool,
@@ -136,7 +133,6 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
         )
 
         enable_forecast = self._config_entry.options.get(CONF_ENABLE_FORECAST, True)
-        enable_radolan = self._config_entry.options.get(CONF_ENABLE_RADOLAN, True)
         enable_icon_eu = self._config_entry.options.get(CONF_ENABLE_ICON_EU, True)
         enable_uv = self._config_entry.options.get(CONF_ENABLE_UV, True)
         enable_warnings = self._config_entry.options.get(CONF_ENABLE_WARNINGS, True)
@@ -157,7 +153,6 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
                         CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL
                     ),
                     CONF_ENABLE_FORECAST: user_input.get(CONF_ENABLE_FORECAST, enable_forecast),
-                    CONF_ENABLE_RADOLAN: user_input.get(CONF_ENABLE_RADOLAN, enable_radolan),
                     CONF_ENABLE_ICON_EU: user_input.get(CONF_ENABLE_ICON_EU, enable_icon_eu),
                     CONF_ENABLE_UV: user_input.get(CONF_ENABLE_UV, enable_uv),
                     CONF_ENABLE_WARNINGS: user_input.get(CONF_ENABLE_WARNINGS, enable_warnings),
@@ -186,7 +181,6 @@ class RainradarOptionsFlow(config_entries.OptionsFlow):
                         default=scan_interval,
                     ): vol.All(vol.Coerce(int), vol.Range(min=60, max=3600)),
                     vol.Optional(CONF_ENABLE_FORECAST, default=enable_forecast): bool,
-                    vol.Optional(CONF_ENABLE_RADOLAN, default=enable_radolan): bool,
                     vol.Optional(CONF_ENABLE_ICON_EU, default=enable_icon_eu): bool,
                     vol.Optional(CONF_ENABLE_UV, default=enable_uv): bool,
                     vol.Optional(CONF_ENABLE_WARNINGS, default=enable_warnings): bool,

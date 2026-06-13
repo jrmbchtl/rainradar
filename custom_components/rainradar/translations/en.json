@@ -9,7 +9,6 @@
           "device_trackers": "Device trackers",
           "scan_interval": "Update interval (seconds)",
           "enable_forecast": "Enable MOSMIX-S forecast (48h hourly)",
-          "enable_radolan": "Enable RADOLAN calibrated precipitation",
           "enable_icon_eu": "Enable ICON-EU phase-separated precipitation",
           "enable_uv": "Enable UV index (Open-Meteo)"
         }
@@ -28,7 +27,6 @@
           "device_trackers": "Device trackers",
           "scan_interval": "Update interval (seconds)",
           "enable_forecast": "Enable MOSMIX-S forecast (48h hourly)",
-          "enable_radolan": "Enable RADOLAN calibrated precipitation",
           "enable_icon_eu": "Enable ICON-EU phase-separated precipitation",
           "enable_uv": "Enable UV index (Open-Meteo)"
         }

@@ -18,7 +18,7 @@ CONF_DEVICE_TRACKERS = "device_trackers"
 CONF_TRACKED_LOCATION_NAME = "tracked_location_name"
 CONF_CENTER_ENTITY = "center_entity"
 CONF_ENABLE_FORECAST = "enable_forecast"
-CONF_ENABLE_RADOLAN = "enable_radolan"
+
 CONF_ENABLE_ICON_EU = "enable_icon_eu"
 CONF_ENABLE_UV = "enable_uv"
 CONF_ENABLE_WARNINGS = "enable_warnings"
@@ -26,7 +26,6 @@ CONF_ENABLE_AIR_QUALITY = "enable_air_quality"
 
 DEFAULT_SCAN_INTERVAL = 600
 FORECAST_SCAN_INTERVAL = 3600
-RADOLAN_SCAN_INTERVAL = 600
 ICON_SCAN_INTERVAL = 10800
 UV_SCAN_INTERVAL = 3600
 
@@ -41,7 +40,6 @@ DWD_CDC_HOURLY = f"{DWD_CDC_CLIMATE}/hourly"
 DWD_CDC_10MIN = f"{DWD_CDC_CLIMATE}/10_minutes"
 DWD_CDC_DAILY = f"{DWD_CDC_CLIMATE}/daily"
 DWD_MOSMIX_BASE = f"{DWD_OPENDATA}/weather/local_forecasts/mos/MOSMIX_S/all_stations/kml"
-DWD_RADOLAN_BASE = f"{DWD_OPENDATA}/weather/radar/radolan"
 DWD_ICON_EU_BASE = f"{DWD_OPENDATA}/weather/nwp/icon-eu/grib"
 OPEN_METEO_BASE = "https://api.open-meteo.com/v1/forecast"
 OPEN_METEO_AIR_QUALITY_BASE = "https://air-quality-api.open-meteo.com/v1/air-quality"

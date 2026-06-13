@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import re
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timezone

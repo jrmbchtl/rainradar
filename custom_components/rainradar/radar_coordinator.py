@@ -17,7 +17,6 @@ from .const import (
     DOMAIN,
     CONF_SCAN_INTERVAL,
     CONF_ENABLE_FORECAST,
-    CONF_ENABLE_RADOLAN,
     CONF_ENABLE_ICON_EU,
     CONF_ENABLE_UV,
     CONF_ENABLE_WARNINGS,
@@ -42,7 +41,6 @@ from .const import (
 )
 from .station_mapping import find_nearest_stations, DWDStation
 from .mosmix import fetch_mosmix_forecast, get_mosmix_station_ids
-from .radolan import fetch_radolan_grid, get_radolan_value
 from .iconeu import fetch_icon_eu_precip
 from .openmeteo import fetch_openmeteo_weather, fetch_openmeteo_air_quality
 from .warnings import (
@@ -58,7 +56,7 @@ _LOGGER = logging.getLogger(__name__)
 class RadarDataCoordinator(DataUpdateCoordinator):
     """Slow coordinator for radar frames and forecast data.
 
-    Fetches radar composite PNGs, MOSMIX-S forecast, RADOLAN, ICON-EU,
+    Fetches radar composite PNGs, MOSMIX-S forecast, ICON-EU,
     and UV index. Runs in background so sensor updates are not blocked.
     """
 
@@ -83,8 +81,6 @@ class RadarDataCoordinator(DataUpdateCoordinator):
         self._url_prefix: str = frames_url_prefix(entry.entry_id)
         self._last_frame_error: str | None = None
         self._cache_reprocessed = False
-        self._radolan_grid = None
-        self._radolan_last_update: float = 0
         self._mosmix_cache: dict[str, list[dict]] = {}
         self._mosmix_last_update: dict[str, float] = {}
 
@@ -345,13 +341,6 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                 result.append({"time": slot_ts, "temperature": t})
         return result
 
-    async def _fetch_radolan_for_location(self, lat: float, lon: float) -> float | None:
-        now_ts = datetime.now(timezone.utc).timestamp()
-        if self._radolan_grid is None or (now_ts - self._radolan_last_update) > 600:
-            self._radolan_grid = await fetch_radolan_grid(self._session)
-            self._radolan_last_update = now_ts
-        return get_radolan_value(self._radolan_grid, lat, lon)
-
     async def _async_update_data(self) -> dict[str, Any]:
         try:
             await self._reprocess_cache_once()
@@ -360,7 +349,6 @@ class RadarDataCoordinator(DataUpdateCoordinator):
 
             enable_forecast = self.entry.options.get(CONF_ENABLE_FORECAST, True)
             enable_uv = self.entry.options.get(CONF_ENABLE_UV, True)
-            enable_radolan = self.entry.options.get(CONF_ENABLE_RADOLAN, True)
             enable_icon_eu = self.entry.options.get(CONF_ENABLE_ICON_EU, True)
             enable_warnings = self.entry.options.get(CONF_ENABLE_WARNINGS, True)
             enable_air_quality = self.entry.options.get(CONF_ENABLE_AIR_QUALITY, True)
@@ -372,6 +360,14 @@ class RadarDataCoordinator(DataUpdateCoordinator):
             async def _try_mosmix():
                 if not enable_forecast:
                     return None, None
+
+                # Ensure MOSMIX KML cache is populated before the location loop
+                if not get_mosmix_station_ids() and self._stations:
+                    try:
+                        await self._fetch_mosmix(self._stations[0].station_id)
+                    except Exception:
+                        pass
+
                 mosmix_result: dict[str, list[dict]] = {}
                 temp_4h: dict[str, list[dict]] = {}
                 now_ts = datetime.now(timezone.utc).timestamp()
@@ -395,11 +391,7 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                             temp_4h[loc_key] = self._interpolate_mosmix_4h(forecast, now_ts)
                             found = True
                             break
-                    if not found and not get_mosmix_station_ids():
-                        _LOGGER.warning(
-                            "No MOSMIX-S forecast for %s (MOSMIX cache not yet populated)", _nm
-                        )
-                    elif not found:
+                    if not found:
                         _LOGGER.warning(
                             "No MOSMIX-S forecast for %s (0/3 nearest MOSMIX stations had data)", _nm
                         )
@@ -419,7 +411,7 @@ class RadarDataCoordinator(DataUpdateCoordinator):
             if mosmix_by_location:
                 result["mosmix_by_location"] = mosmix_by_location
 
-            # UV, RADOLAN, ICON-EU, WARNINGS, AQ — all optional, run in parallel
+            # UV, ICON-EU, WARNINGS, AQ — all optional, run in parallel
             async def _try_uv():
                 if not enable_uv or not location_specs:
                     return {}
@@ -433,18 +425,6 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                             if "uv_index_max" in om_data:
                                 r["uv_index_max"] = om_data["uv_index_max"]
                             return r
-                    except Exception:
-                        continue
-                return {}
-
-            async def _try_radolan():
-                if not enable_radolan or not location_specs:
-                    return {}
-                for _lk, _nm, _se, lat, lon, _sl in location_specs:
-                    try:
-                        val = await self._fetch_radolan_for_location(lat, lon)
-                        if val is not None:
-                            return {"radolan_precipitation": val}
                     except Exception:
                         continue
                 return {}
@@ -481,8 +461,8 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                         continue
                 return {}
 
-            uv_res, radolan_res, icon_res, warnings_res, aq_res = await asyncio.gather(
-                _try_uv(), _try_radolan(), _try_icon(),
+            uv_res, icon_res, warnings_res, aq_res = await asyncio.gather(
+                _try_uv(), _try_icon(),
                 _try_warnings(), _try_air_quality(),
                 return_exceptions=True,
             )
@@ -491,12 +471,6 @@ class RadarDataCoordinator(DataUpdateCoordinator):
             radar_locations: dict[str, dict] = {}
             for loc_key, loc_name, _se, lat, lon, _sl in location_specs:
                 radar_locations[loc_key] = {}
-
-                # Every location shares the same radolan_precipitation (flat key)
-                if isinstance(radolan_res, dict):
-                    rp = radolan_res.get("radolan_precipitation")
-                    if rp is not None:
-                        radar_locations[loc_key]["radolan_precipitation"] = rp
 
                 # Every location shares the same AQ data (flat key, first location)
                 if isinstance(aq_res, dict):
@@ -578,8 +552,6 @@ class RadarDataCoordinator(DataUpdateCoordinator):
             # Also keep flat keys for backward-compatible diagnostics
             if isinstance(uv_res, dict):
                 result.update(uv_res)
-            if isinstance(radolan_res, dict):
-                result.update(radolan_res)
             if isinstance(icon_res, dict):
                 result.update(icon_res)
 

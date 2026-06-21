@@ -45,7 +45,7 @@ from .iconeu import fetch_icon_eu_precip
 from .openmeteo import fetch_openmeteo_weather, fetch_openmeteo_air_quality
 from .warnings import (
     fetch_dwd_warnings,
-    resolve_warnings_for_location,
+    resolve_warnings_for_coordinates,
     warning_level_from_warnings,
     warning_headline_from_warnings,
 )
@@ -491,9 +491,9 @@ class RadarDataCoordinator(DataUpdateCoordinator):
                         if val is not None:
                             radar_locations[loc_key][aq_key] = val
 
-                # Warnings per location by name matching
-                if isinstance(warnings_res, dict):
-                    matching = resolve_warnings_for_location(warnings_res, loc_name)
+                # Warnings per location by coordinate matching (point-in-polygon)
+                if isinstance(warnings_res, list):
+                    matching = resolve_warnings_for_coordinates(warnings_res, lat, lon)
                     radar_locations[loc_key]["warning_level"] = warning_level_from_warnings(matching)
                     headline = warning_headline_from_warnings(matching)
                     if headline:

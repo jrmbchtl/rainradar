@@ -1,19 +1,23 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
-DWD_WARNINGS_URL = "https://www.dwd.de/DWD/warnungen/warnapp/json/warnings.json"
+DWD_WARNINGS_URL = (
+    "https://s3.eu-central-1.amazonaws.com/"
+    "app-prod-static.warnwetter.de/v16/gemeinde_warnings_v2.json"
+)
 
 
-async def fetch_dwd_warnings(session: aiohttp.ClientSession) -> dict[str, list[dict]] | None:
+async def fetch_dwd_warnings(session: aiohttp.ClientSession) -> list[dict] | None:
     """Fetch all current DWD severe weather warnings.
 
-    Returns dict[str, list[dict]] keyed by region code (AGS), or None on failure.
+    Returns a list of warning dicts from the DWD WarnWetter V16 API,
+    each containing level, headLine, event, and regions with polygon geometry.
+    Returns None on failure.
     """
     try:
         async with session.get(DWD_WARNINGS_URL) as resp:
@@ -27,29 +31,56 @@ async def fetch_dwd_warnings(session: aiohttp.ClientSession) -> dict[str, list[d
         return None
 
 
-def resolve_warnings_for_location(
-    warnings: dict[str, list[dict]] | None,
-    location_name: str,
-) -> list[dict]:
-    """Find warnings matching a location name.
+def _point_in_polygon(lon: float, lat: float, polygon: list[float]) -> bool:
+    """Ray-casting point-in-polygon check.
 
-    Matches by checking if the warncell ``regionName`` contains the given
-    location name (case-insensitive). Returns the list of matching warnings,
-    or an empty list if none match.
+    ``polygon`` is a flat list alternating lat/lon as returned by the
+    DWD V16 API ``regions[].polygon`` field:
+        [lat1, lon1, lat2, lon2, …, latN, lonN]
+    The ring is implicitly closed (first=last).
     """
-    if not warnings or not location_name:
+    if not polygon or len(polygon) < 4:
+        return False
+    inside = False
+    n = len(polygon)
+    j = n - 2
+    for i in range(0, n, 2):
+        lati, loni = polygon[i], polygon[i + 1]
+        latj, lonj = polygon[j], polygon[j + 1]
+        if ((lati > lat) != (latj > lat)) and (
+            lon < (lonj - loni) * (lat - lati) / (latj - lati) + loni
+        ):
+            inside = not inside
+        j = i
+    return inside
+
+
+def resolve_warnings_for_coordinates(
+    warnings: list[dict] | None,
+    lat: float,
+    lon: float,
+) -> list[dict]:
+    """Find warnings that cover the given coordinates.
+
+    Uses point-in-polygon matching against the GeoJSON polygons included
+    in each warning's ``regions``. Returns a list of matching warnings
+    (empty list if none match).
+    """
+    if not warnings:
         return []
-    name_lower = location_name.lower()
     matching: list[dict] = []
-    seen: set[int] = set()
-    for cell_warnings in warnings.values():
-        for w in cell_warnings:
-            region = w.get("regionName", "")
-            if name_lower in region.lower():
-                wid = id(w)
-                if wid not in seen:
-                    seen.add(wid)
-                    matching.append(w)
+    seen: set[str] = set()
+    for w in warnings:
+        warn_id = w.get("warnId", "")
+        if warn_id and warn_id in seen:
+            continue
+        for region in w.get("regions", []):
+            poly = region.get("polygon")
+            if poly and _point_in_polygon(lon, lat, poly):
+                if warn_id:
+                    seen.add(warn_id)
+                matching.append(w)
+                break
     return matching
 
 
@@ -57,6 +88,8 @@ def warning_level_from_warnings(warnings_list: list[dict]) -> int:
     """Return the highest warning level (0-4) from a list of warnings.
 
     0 = no warning, 1 = minor, 2 = moderate, 3 = severe, 4 = extreme.
+    Note: DWD heat warnings use levels 50 (moderate) and 51 (extreme);
+    these are returned as-is.
     """
     if not warnings_list:
         return 0
@@ -72,5 +105,10 @@ def warning_headline_from_warnings(warnings_list: list[dict]) -> str | None:
     """Return the headline of the highest-level warning, or None."""
     if not warnings_list:
         return None
-    best = max(warnings_list, key=lambda w: w.get("level", 0) if isinstance(w.get("level"), (int, float)) else 0)
-    return best.get("headline")
+    best = max(
+        warnings_list,
+        key=lambda w: w.get("level", 0)
+        if isinstance(w.get("level"), (int, float))
+        else 0,
+    )
+    return best.get("headLine") or best.get("headline")

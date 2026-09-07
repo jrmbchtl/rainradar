@@ -187,6 +187,9 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def native_uv_index(self):
+        cams_uv = self._current_cams_uv()
+        if cams_uv is not None:
+            return cams_uv
         return self._loc_data().get("uv_index")
 
     @property
@@ -218,7 +221,50 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
             return None
         return radar_coord.data.get("mosmix_by_location", {}).get(self._loc_key)
 
+    def _wn_forecast(self) -> list[dict] | None:
+        """WeatherNext 3 hourly forecast for this location (primary when enabled)."""
+        runtime = self._entry.runtime_data
+        wn_coord = getattr(runtime, "weathernext_coordinator", None) if runtime else None
+        if wn_coord is None or not wn_coord.last_update_success or not wn_coord.data:
+            return None
+        fc = wn_coord.data.get("locations", {}).get(self._loc_key, {}).get("hourly")
+        return fc or None
+
+    def _wn_enabled(self) -> bool:
+        runtime = self._entry.runtime_data
+        return bool(
+            runtime
+            and getattr(runtime, "weathernext_coordinator", None) is not None
+        )
+
+    def _cams_uv_series(self) -> list[dict] | None:
+        """CAMS all-sky UV hourly series for this location."""
+        runtime = self._entry.runtime_data
+        cams_coord = getattr(runtime, "cams_coordinator", None) if runtime else None
+        if cams_coord is None or not cams_coord.last_update_success or not cams_coord.data:
+            return None
+        series = cams_coord.data.get("locations", {}).get(self._loc_key, [])
+        return series or None
+
+    def _current_cams_uv(self) -> float | None:
+        series = self._cams_uv_series()
+        if not series:
+            return None
+        now_ts = datetime.now(UTC).timestamp()
+        best = None
+        best_delta = float("inf")
+        for entry in series:
+            delta = abs(entry.get("ts", 0) - now_ts)
+            if delta < best_delta:
+                best_delta = delta
+                best = entry.get("uv_index")
+        # Only trust values within 3h of now.
+        return best if best_delta <= 3 * 3600 else None
+
     def _merged_hourly(self) -> list[dict] | None:
+        wn_fc = self._wn_forecast() if self._wn_enabled() else None
+        if wn_fc:
+            return wn_fc
         om = self._om_hourly_forecast()
         mosmix = self._mosmix_cache or self._mosmix_forecast()
         if not mosmix:
@@ -288,7 +334,32 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
                 )
             except (ValueError, TypeError):
                 pass
+        elif "condition" not in entry:
+            # WN3 entries carry no ww code — derive from cloud/precip/temp.
+            entry["condition"] = self._wn_condition(fc)
         return entry
+
+    @staticmethod
+    def _wn_condition(fc: dict) -> str | None:
+        """Derive an HA condition from a WeatherNext forecast entry."""
+        temp = fc.get("temperature")
+        precip = fc.get("precipitation") or 0.0
+        cloud = fc.get("cloud_cover")
+        if temp is not None and precip > 0 and temp < 1.5:
+            return "snowy"
+        if precip >= 7.5:
+            return "pouring"
+        if precip > 0.2:
+            return "rainy"
+        if cloud is not None:
+            if cloud >= 87.5:
+                return "cloudy"
+            if cloud >= 37.5:
+                return "partlycloudy"
+            return "sunny"
+        if temp is not None:
+            return "partlycloudy"
+        return None
 
     def _fc_list(self, raw: list[dict], is_daytime: bool | None = None) -> list[Forecast]:
         result = []
@@ -336,8 +407,27 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
     async def async_forecast_hourly(self) -> list[Forecast] | None:
         merged = self._merged_hourly()
         if merged:
+            merged = self._attach_cams_uv(merged)
             return self._fc_list(merged)
         return []
+
+    def _attach_cams_uv(self, entries: list[dict]) -> list[dict]:
+        """Attach the CAMS all-sky UV series to forecast entries by hour."""
+        series = self._cams_uv_series()
+        if not series:
+            return entries
+        by_hour: dict[int, float] = {}
+        for uv in series:
+            dt = datetime.fromtimestamp(uv["ts"], tz=UTC)
+            by_hour[int(dt.replace(minute=0, second=0).timestamp())] = uv["uv_index"]
+        for entry in entries:
+            ts = entry.get("ts")
+            if ts is None or "uv_index" in entry:
+                continue
+            hour_key = int(datetime.fromtimestamp(ts, tz=UTC).replace(minute=0, second=0).timestamp())
+            if hour_key in by_hour:
+                entry["uv_index"] = by_hour[hour_key]
+        return entries
 
     async def async_forecast_twice_daily(self) -> list[Forecast] | None:
         merged = self._merged_hourly()

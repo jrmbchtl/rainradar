@@ -158,7 +158,7 @@ async def test_unload_without_setup_does_not_crash(hass: HomeAssistant) -> None:
             p.stop()
 
 
-async def test_v1_entry_migrates_to_v2(
+async def test_v1_entry_migrates_to_v3(
     hass: HomeAssistant, v1_config_entry: MockConfigEntry
 ) -> None:
     """Regression: migration hook must be resolved from __init__.py."""
@@ -174,7 +174,7 @@ async def test_v1_entry_migrates_to_v2(
             p.stop()
 
     assert v1_config_entry.state is ConfigEntryState.LOADED
-    assert v1_config_entry.version == 2
+    assert v1_config_entry.version == 3
     # locations -> zones, legacy tracker mirrored
     assert v1_config_entry.options["zones"] == ["zone.home"]
     assert v1_config_entry.options["device_trackers"] == ["device_tracker.old_phone"]
@@ -184,7 +184,7 @@ async def test_v1_entry_migrates_to_v2(
 async def test_migrate_rejects_future_version(hass: HomeAssistant) -> None:
     from custom_components.rainradar import async_migrate_entry
 
-    entry = MockConfigEntry(domain=DOMAIN, title="Rainradar", version=3, data={}, options={})
+    entry = MockConfigEntry(domain=DOMAIN, title="Rainradar", version=4, data={}, options={})
     assert await async_migrate_entry(hass, entry) is False
 
 
@@ -236,3 +236,34 @@ async def test_setup_survives_first_refresh_failure(
 
     assert mock_config_entry.state is ConfigEntryState.LOADED
     assert any("Initial weather refresh failed" in r.message for r in caplog.records)
+
+
+async def test_v2_entry_migrates_to_v3(hass: HomeAssistant) -> None:
+    """v2 entries gain the v3 experimental keys with safe defaults."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Rainradar",
+        version=2,
+        data={},
+        options={"zones": ["zone.home"], "scan_interval": 600},
+    )
+    entry.add_to_hass(hass)
+    patches = _patch_network()
+    for p in patches.values():
+        p.start()
+    try:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    finally:
+        for p in patches.values():
+            p.stop()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert entry.version == 3
+    assert entry.options["enable_weathernext"] is False
+    assert entry.options["enable_wn_overlay"] is True
+    assert entry.options["enable_pkg_solar"] is False
+    assert entry.options["enable_pkg_wind"] is False
+    assert entry.options["enable_pkg_probability"] is False
+    assert entry.options["enable_cams_uv"] is False
+    assert entry.options["wn_gcp_project_id"] == ""

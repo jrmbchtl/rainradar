@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from "lit";
 import L from "leaflet";
 
-const CARD_VERSION = "0.5.23";
+const CARD_VERSION = "0.6.0";
 const OSM_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTR = "&copy; <a href='https://openstreetmap.org'>OSM</a>";
 
@@ -18,6 +18,12 @@ const DATA_RETRY_MS = 3000;
 const RADAR_BOUNDS = [
   [42.0, -2.0],
   [60.0, 22.0],
+];
+
+// WeatherNext 3 global overlay bounds (0.1° grid, world-wide coverage).
+const WN_BOUNDS = [
+  [-89.95, 0.0],
+  [89.95, 360.0],
 ];
 
 // World-wide bounds: the DWD composite itself only covers Germany,
@@ -82,6 +88,7 @@ class RainradarCard extends LitElement {
     _showingNoData: { state: true },
     _timeLabel: { state: true },
     _isPreview: { state: true },
+    _layer: { state: true },
   };
 
   constructor() {
@@ -92,6 +99,7 @@ class RainradarCard extends LitElement {
     this._showingNoData = true;
     this._timeLabel = "";
     this._isPreview = false;
+    this._layer = "dwd";
     this._map = null;
     this._osmLayer = null;
     this._overlay = null;
@@ -342,9 +350,12 @@ class RainradarCard extends LitElement {
     const frames = attrs.frames || attrs;
     const past = Array.isArray(frames.past) ? frames.past : [];
     const nowcast = Array.isArray(frames.nowcast) ? frames.nowcast : [];
+    const wnFrames = attrs.wn_frames || null;
+    const wn = wnFrames && Array.isArray(wnFrames.nowcast) ? wnFrames.nowcast : [];
     return {
       past,
       nowcast,
+      wn,
       lastUpdate: attrs.last_update || null,
       frameError: attrs.frame_error || null,
     };
@@ -400,15 +411,18 @@ class RainradarCard extends LitElement {
       return;
     }
 
-    const past = data.past;
-    const nowcast = data.nowcast;
+    // Layer selection: WN3 global (48h@1h) vs DWD composite (2h@5min).
+    const useWn = this._layer === "weathernext" && data.wn.length > 0;
+    const past = useWn ? [] : data.past;
+    const nowcast = useWn ? data.wn : data.nowcast;
     _dlog("frames", "sensor has", past.length, "past,", nowcast.length, "nowcast",
-      data.frameError ? `error="${data.frameError}"` : "");
+      useWn ? "[WN3 layer]" : "",
+      data.frameError && !useWn ? `error="${data.frameError}"` : "");
 
     this._frames = [...past, ...nowcast];
 
     if (!this._frames.length) {
-      this._timeLabel = data.frameError
+      this._timeLabel = !useWn && data.frameError
         ? `No frames: ${data.frameError}`
         : "No frames available — waiting for next update";
       this._showingNoData = true;
@@ -421,6 +435,7 @@ class RainradarCard extends LitElement {
 
     this._showingNoData = false;
     this._lastFramesSignature = this._framesSignature(data);
+    this._activeLayer = useWn ? "weathernext" : "dwd";
 
     if (!this._map) {
       _dlog("frames", "frames ready but no map yet");
@@ -428,19 +443,21 @@ class RainradarCard extends LitElement {
       return;
     }
 
+    const bounds = useWn ? WN_BOUNDS : RADAR_BOUNDS;
     const nowIdx = this._nowIndex();
 
     if (!this._overlay) {
-      _dlog("overlay", "create", { url: this._frames[nowIdx].url, bounds: RADAR_BOUNDS });
+      _dlog("overlay", "create", { url: this._frames[nowIdx].url, bounds });
       this._overlay = L.imageOverlay(
         this._frames[nowIdx].url,
-        RADAR_BOUNDS,
+        bounds,
         { opacity: 0.7, interactive: false, crossOrigin: false }
       ).addTo(this._map);
       this._overlay.on("load", () => _dlog("overlay", "image loaded", this._overlay?._url));
       this._overlay.on("error", (ev) => _dlog("overlay", "image error", ev));
     } else {
       _dlog("overlay", "setUrl", this._frames[nowIdx].url);
+      this._overlay.setBounds(bounds);
       this._overlay.setUrl(this._frames[nowIdx].url);
     }
 
@@ -535,6 +552,12 @@ class RainradarCard extends LitElement {
   _onSlider(e) {
     const idx = parseInt(e.target.value, 10);
     if (Number.isFinite(idx)) this._showFrame(idx);
+  }
+
+  _switchLayer() {
+    this._layer = this._layer === "dwd" ? "weathernext" : "dwd";
+    _dlog("overlay", "layer switch", this._layer);
+    this._buildFrames();
   }
 
   _recenter() {
@@ -829,6 +852,7 @@ class RainradarCard extends LitElement {
     }
     const maxIdx = Math.max(0, this._frames.length - 1);
     const sensorAttrs = this._getFramesAttributes() || {};
+    const framesData = this._getFramesData();
 
     return html`
       <div id="map"></div>
@@ -887,6 +911,24 @@ class RainradarCard extends LitElement {
         <div
           style="position:absolute;bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:6px;background:rgba(20,20,20,0.92);padding:6px 14px;border-radius:24px;box-shadow:0 2px 8px rgba(0,0,0,0.5);font-size:13px;pointer-events:auto;border:1px solid rgba(255,255,255,0.08);"
         >
+          ${framesData && framesData.wn.length > 0
+            ? html`
+                <button
+                  style="background:none;border:none;cursor:pointer;padding:4px 6px;border-radius:4px;display:flex;align-items:center;color:#fff;font-size:15px;${this
+                    ._layer === "weathernext"
+                    ? "color:#4dd0e1;"
+                    : ""}"
+                  @click=${() => this._switchLayer()}
+                  title=${this._layer === "weathernext"
+                    ? "WeatherNext 48h @ 1h — click for DWD 5-min"
+                    : "DWD 5-min nowcast — click for WeatherNext 48h"}
+                >
+                  <ha-icon
+                    icon=${this._layer === "weathernext" ? "mdi:earth" : "mdi:radar"}
+                  ></ha-icon>
+                </button>
+              `
+            : nothing}
           <button
             style="background:none;border:none;cursor:pointer;padding:4px 6px;border-radius:4px;display:flex;align-items:center;color:#fff;font-size:16px;"
             @click=${this._togglePlay}

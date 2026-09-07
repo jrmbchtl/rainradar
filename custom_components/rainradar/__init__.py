@@ -15,11 +15,18 @@ from .const import (
     CONF_DEVICE_TRACKER,
     CONF_DEVICE_TRACKERS,
     CONF_ENABLE_AIR_QUALITY,
+    CONF_ENABLE_CAMS_UV,
     CONF_ENABLE_FORECAST,
     CONF_ENABLE_ICON_EU,
+    CONF_ENABLE_PKG_PROBABILITY,
+    CONF_ENABLE_PKG_SOLAR,
+    CONF_ENABLE_PKG_WIND,
     CONF_ENABLE_UV,
     CONF_ENABLE_WARNINGS,
+    CONF_ENABLE_WEATHERNEXT,
+    CONF_ENABLE_WN_OVERLAY,
     CONF_LOCATIONS,
+    CONF_WN_GCP_PROJECT_ID,
     CONF_ZONES,
     DOMAIN,
     INTEGRATION_VERSION,
@@ -45,6 +52,8 @@ class RainradarEntryData:
     weather_coordinator: object
     radar_coordinator: object
     stations: list[DWDStation] = field(default_factory=list)
+    weathernext_coordinator: object | None = None
+    cams_coordinator: object | None = None
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -53,17 +62,38 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    from .credentials import async_copy_flow_credentials, async_get_credentials
     from .radar_coordinator import RadarDataCoordinator
     from .weather_coordinator import WeatherDataCoordinator
+
+    # Credentials saved during the user flow are keyed by flow id — re-key
+    # them to the entry id on first setup.
+    await async_copy_flow_credentials(hass, entry.entry_id, entry.entry_id)
+    creds = await async_get_credentials(hass, entry.entry_id)
 
     stations: list[DWDStation] = []
     weather_coordinator = WeatherDataCoordinator(hass, entry, stations)
     radar_coordinator = RadarDataCoordinator(hass, entry, stations)
 
+    weathernext_coordinator = None
+    cams_coordinator = None
+    if entry.options.get(CONF_ENABLE_WEATHERNEXT) and creds.get(
+        "wn_service_account_info"
+    ):
+        from .weathernext_coordinator import WeatherNextCoordinator
+
+        weathernext_coordinator = WeatherNextCoordinator(hass, entry, creds)
+    if entry.options.get(CONF_ENABLE_CAMS_UV) and creds.get("cams_api_token"):
+        from .cams_coordinator import CamsCoordinator
+
+        cams_coordinator = CamsCoordinator(hass, entry, creds)
+
     entry.runtime_data = RainradarEntryData(
         weather_coordinator=weather_coordinator,
         radar_coordinator=radar_coordinator,
         stations=stations,
+        weathernext_coordinator=weathernext_coordinator,
+        cams_coordinator=cams_coordinator,
     )
 
     await _register_frames_path(hass, entry.entry_id)
@@ -97,6 +127,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         f"{DOMAIN}_initial_radar_refresh_{entry.entry_id}",
     )
 
+    if weathernext_coordinator is not None:
+        entry.async_create_background_task(
+            hass,
+            _initial_wn_refresh(weathernext_coordinator),
+            f"{DOMAIN}_initial_wn_refresh_{entry.entry_id}",
+        )
+    if cams_coordinator is not None:
+        entry.async_create_background_task(
+            hass,
+            _initial_cams_refresh(cams_coordinator),
+            f"{DOMAIN}_initial_cams_refresh_{entry.entry_id}",
+        )
+
     try:
         from .openmap_bridge import (
             async_register_overlay,
@@ -118,24 +161,43 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     NOTE: HA resolves this hook on the integration component (__init__.py),
     NOT on the config flow class.
     """
-    if entry.version > 2:
+    if entry.version > 3:
         # Downgrade from a future version: not supported.
         return False
 
-    if entry.version == 1:
-        data = {**entry.data}
+    if entry.version < 3:
+        if entry.version == 1:
+            data = {**entry.data}
+            options = {**entry.options}
+            options.setdefault(CONF_ZONES, options.pop(CONF_LOCATIONS, []))
+            options.setdefault(CONF_DEVICE_TRACKERS, [])
+            legacy_tracker = options.get(CONF_DEVICE_TRACKER)
+            if legacy_tracker and not options[CONF_DEVICE_TRACKERS]:
+                options[CONF_DEVICE_TRACKERS] = [legacy_tracker]
+            hass.config_entries.async_update_entry(
+                entry, data=data, options=options, version=2
+            )
+
+        # v2 -> v3: WeatherNext/CAMS/package keys did not exist; defaults
+        # (all disabled) are applied so the flow only shows them when opened.
+        # v1 entries that skipped the v2 toggle defaults get them here too.
         options = {**entry.options}
-        options.setdefault(CONF_ZONES, options.pop(CONF_LOCATIONS, []))
-        options.setdefault(CONF_DEVICE_TRACKERS, [])
-        legacy_tracker = options.get(CONF_DEVICE_TRACKER)
-        if legacy_tracker and not options[CONF_DEVICE_TRACKERS]:
-            options[CONF_DEVICE_TRACKERS] = [legacy_tracker]
-        options.setdefault(CONF_ENABLE_FORECAST, True)
-        options.setdefault(CONF_ENABLE_ICON_EU, True)
-        options.setdefault(CONF_ENABLE_UV, True)
-        options.setdefault(CONF_ENABLE_WARNINGS, True)
-        options.setdefault(CONF_ENABLE_AIR_QUALITY, True)
-        hass.config_entries.async_update_entry(entry, data=data, options=options, version=2)
+        for toggle in (
+            CONF_ENABLE_FORECAST,
+            CONF_ENABLE_ICON_EU,
+            CONF_ENABLE_UV,
+            CONF_ENABLE_WARNINGS,
+            CONF_ENABLE_AIR_QUALITY,
+        ):
+            options.setdefault(toggle, True)
+        options.setdefault(CONF_ENABLE_WEATHERNEXT, False)
+        options.setdefault(CONF_ENABLE_WN_OVERLAY, True)
+        options.setdefault(CONF_ENABLE_PKG_SOLAR, False)
+        options.setdefault(CONF_ENABLE_PKG_WIND, False)
+        options.setdefault(CONF_ENABLE_PKG_PROBABILITY, False)
+        options.setdefault(CONF_ENABLE_CAMS_UV, False)
+        options.setdefault(CONF_WN_GCP_PROJECT_ID, "")
+        hass.config_entries.async_update_entry(entry, options=options, version=3)
 
     _LOGGER.info("Config entry %s migrated to version %s", entry.entry_id, entry.version)
     return True
@@ -148,6 +210,26 @@ async def _initial_radar_refresh(coordinator):
     except Exception as exc:
         _LOGGER.warning(
             "Initial radar refresh failed; will retry on next interval: %s", exc
+        )
+
+
+async def _initial_wn_refresh(coordinator):
+    """First WeatherNext refresh in background (slow first read)."""
+    try:
+        await coordinator.async_refresh()
+    except Exception as exc:
+        _LOGGER.warning(
+            "Initial WeatherNext refresh failed; will retry on next interval: %s", exc
+        )
+
+
+async def _initial_cams_refresh(coordinator):
+    """First CAMS UV refresh in background (ADS queue can be slow)."""
+    try:
+        await coordinator.async_refresh()
+    except Exception as exc:
+        _LOGGER.warning(
+            "Initial CAMS UV refresh failed; will retry on next interval: %s", exc
         )
 
 

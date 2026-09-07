@@ -32,6 +32,18 @@ CONF_ENABLE_UV = "enable_uv"
 CONF_ENABLE_WARNINGS = "enable_warnings"
 CONF_ENABLE_AIR_QUALITY = "enable_air_quality"
 
+CONF_ENABLE_WEATHERNEXT = "enable_weathernext"
+CONF_WN_GCP_PROJECT_ID = "wn_gcp_project_id"
+CONF_ENABLE_WN_OVERLAY = "enable_wn_overlay"
+CONF_ENABLE_PKG_SOLAR = "enable_pkg_solar"
+CONF_ENABLE_PKG_WIND = "enable_pkg_wind"
+CONF_ENABLE_PKG_PROBABILITY = "enable_pkg_probability"
+CONF_ENABLE_CAMS_UV = "enable_cams_uv"
+CONF_CAMS_API_TOKEN = "cams_api_token"
+
+# Options-flow section that groups experimental data sources.
+ADVANCED_SECTION = "advanced"
+
 DEFAULT_SCAN_INTERVAL = 600
 FORECAST_SCAN_INTERVAL = 3600
 ICON_SCAN_INTERVAL = 10800
@@ -57,7 +69,23 @@ DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.5.23"
+INTEGRATION_VERSION = "0.6.0"
+
+WEATHERNEXT_STATS_BUCKET = "weathernext3_statistics_spatial"
+WEATHERNEXT_STATS_PREFIX = "weathernext_3_0_0_statistics/zarr"
+WEATHERNEXT_OAUTH_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only"
+# Interim inits disseminate at init+7h10m; synoptic at init+7h45m.
+WEATHERNEXT_INTERIM_LAG_MIN = 430
+WEATHERNEXT_DISCOVERY_BACKOFF_HOURS = 8
+WEATHERNEXT_UPDATE_INTERVAL = 3600
+
+CAMS_ADS_URL = "https://ads.atmosphere.copernicus.eu/api"
+CAMS_DATASET = "cams-global-atmospheric-composition-forecasts"
+CAMS_LEADTIME_HOURS = 120
+CAMS_UPDATE_INTERVAL = 7200
+CAMS_RUNS = (0, 12)  # forecast base times (UTC)
+CAMS_AVAILABLE_AT = {0: 10, 12: 22}  # guaranteed availability hours (UTC)
+CAMS_UV_SCALE = 40.0  # uv_bed W/m² → UV index
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -318,6 +346,72 @@ SENSOR_TYPES = {
         "unit": "°C",
         "icon": "mdi:thermometer",
         "device_class": "temperature",
+        "state_class": "measurement",
+    },
+    "uv_index_max_today": {
+        "unit": None,
+        "icon": "mdi:weather-sunny",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "solar_ghi": {
+        "unit": "W/m²",
+        "icon": "mdi:solar-power",
+        "device_class": "irradiance",
+        "state_class": "measurement",
+    },
+    "solar_direct": {
+        "unit": "W/m²",
+        "icon": "mdi:white-balance-sunny",
+        "device_class": "irradiance",
+        "state_class": "measurement",
+    },
+    "cloud_cover_low": {
+        "unit": "%",
+        "icon": "mdi:weather-fog",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "cloud_cover_mid": {
+        "unit": "%",
+        "icon": "mdi:weather-cloudy",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "cloud_cover_high": {
+        "unit": "%",
+        "icon": "mdi:weather-partly-cloudy",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "wind_speed_100m": {
+        "unit": "km/h",
+        "icon": "mdi:wind-turbine",
+        "device_class": "wind_speed",
+        "state_class": "measurement",
+    },
+    "wind_direction_100m": {
+        "unit": "°",
+        "icon": "mdi:compass",
+        "device_class": "wind_direction",
+        "state_class": "measurement_angle",
+    },
+    "rain_risk_24h": {
+        "unit": "%",
+        "icon": "mdi:weather-pouring",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "frost_risk_24h": {
+        "unit": "%",
+        "icon": "mdi:snowflake-alert",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "heat_risk_24h": {
+        "unit": "%",
+        "icon": "mdi:sun-thermometer",
+        "device_class": None,
         "state_class": "measurement",
     },
 }

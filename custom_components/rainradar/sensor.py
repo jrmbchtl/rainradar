@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC
 from typing import Any
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
@@ -45,6 +46,9 @@ from .const import (
     ATTR_WIND_DIRECTION,
     ATTR_WIND_GUST,
     ATTR_WIND_SPEED,
+    CONF_ENABLE_PKG_PROBABILITY,
+    CONF_ENABLE_PKG_SOLAR,
+    CONF_ENABLE_PKG_WIND,
     DOMAIN,
     INTEGRATION_VERSION,
     SENSOR_TYPES,
@@ -109,6 +113,13 @@ OPTIONAL_SENSORS = (
 )
 DEBUG_STATION_SENSORS = ("station_name", "station_id", "station_distance")
 
+# CAMS all-sky UV sensors (actual UV only — no clear-sky).
+CAMS_UV_SENSORS = ("uv_index", "uv_index_max_today")
+# WeatherNext 3 package sensors (raw variables only).
+WN_SOLAR_SENSORS = ("solar_ghi", "solar_direct", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high")
+WN_WIND_SENSORS = ("wind_speed_100m", "wind_direction_100m")
+WN_PROBABILITY_SENSORS = ("rain_risk_24h", "frost_risk_24h", "heat_risk_24h")
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -144,8 +155,12 @@ async def async_setup_entry(
     )
 
     location_specs = resolve_location_specs(hass, entry)
+    cams_coord = getattr(runtime, "cams_coordinator", None)
     for loc in location_specs:
         for sensor_key in CORE_SENSORS + OPTIONAL_SENSORS:
+            # CAMS UV owns the uv_index sensor when enabled.
+            if sensor_key == "uv_index" and cams_coord is not None:
+                continue
             if sensor_key not in SENSOR_TYPES:
                 continue
             desc = SENSOR_TYPES[sensor_key]
@@ -179,6 +194,59 @@ async def async_setup_entry(
                 radar_coordinator, entry, loc.loc_key, loc.name, loc.slug,
             )
         )
+
+        # Experimental packages (WeatherNext 3 / CAMS) — created only when
+        # their coordinators exist in runtime_data.
+        wn_coord = getattr(runtime, "weathernext_coordinator", None)
+        if cams_coord is not None:
+            for sensor_key in CAMS_UV_SENSORS:
+                desc = SENSOR_TYPES.get(sensor_key, {})
+                entities.append(
+                    RainradarCamsSensor(
+                        cams_coord,
+                        entry,
+                        loc.loc_key,
+                        loc.name,
+                        loc.slug,
+                        SensorEntityDescription(
+                            key=f"{sensor_key}_{loc.slug}",
+                            name=f"{loc.name} {sensor_key.replace('_', ' ').title()}",
+                            native_unit_of_measurement=desc.get("unit"),
+                            icon=desc.get("icon"),
+                            device_class=desc.get("device_class"),
+                            state_class=desc.get("state_class"),
+                        ),
+                        sensor_key,
+                    )
+                )
+        if wn_coord is not None:
+            package_sensors: list[str] = []
+            if entry.options.get(CONF_ENABLE_PKG_SOLAR, False):
+                package_sensors += WN_SOLAR_SENSORS
+            if entry.options.get(CONF_ENABLE_PKG_WIND, False):
+                package_sensors += WN_WIND_SENSORS
+            if entry.options.get(CONF_ENABLE_PKG_PROBABILITY, False):
+                package_sensors += WN_PROBABILITY_SENSORS
+            for sensor_key in package_sensors:
+                desc = SENSOR_TYPES[sensor_key]
+                entities.append(
+                    RainradarWnSensor(
+                        wn_coord,
+                        entry,
+                        loc.loc_key,
+                        loc.name,
+                        loc.slug,
+                        SensorEntityDescription(
+                            key=f"{sensor_key}_{loc.slug}",
+                            name=f"{loc.name} {sensor_key.replace('_', ' ').title()}",
+                            native_unit_of_measurement=desc.get("unit"),
+                            icon=desc.get("icon"),
+                            device_class=desc.get("device_class"),
+                            state_class=desc.get("state_class"),
+                        ),
+                        sensor_key,
+                    )
+                )
 
         for sensor_key in DEBUG_STATION_SENSORS:
             desc = SENSOR_TYPES[sensor_key]
@@ -570,3 +638,198 @@ class RainradarHealthSensor(CoordinatorEntity, SensorEntity):
             "last_update_success": self.coordinator.last_update_success,
             "health_state": getattr(self.coordinator, "health_state", True),
         }
+
+
+def _hourly_value_at(entries: list[dict], key: str, max_age_h: float = 2.0) -> float | None:
+    """Return the value of `key` at the hourly entry closest to now."""
+    from datetime import datetime as _dt
+
+    if not entries:
+        return None
+    now_ts = _dt.now(UTC).timestamp()
+    best = None
+    best_delta = float("inf")
+    for entry in entries:
+        delta = abs(entry.get("ts", 0) - now_ts)
+        if delta < best_delta:
+            best_delta = delta
+            best = entry
+    if best is None or best_delta > max_age_h * 3600:
+        return None
+    return best.get(key)
+
+
+class RainradarCamsSensor(CoordinatorEntity, SensorEntity):
+    """Per-location all-sky UV index from CAMS (actual conditions)."""
+
+    _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"hourly_uv"})
+
+    def __init__(
+        self,
+        coordinator,
+        entry: ConfigEntry,
+        loc_key: str,
+        loc_name: str,
+        slug: str,
+        description: SensorEntityDescription,
+        sensor_key: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._loc_key = loc_key
+        self._sensor_key = sensor_key
+        self.entity_description = description
+        self._attr_unique_id = f"{DOMAIN}_{slug}_{sensor_key}"
+        self._attr_device_info = _common_device_info(
+            entry, slug, f"Rainradar {loc_name}", "Weather Station"
+        )
+
+    def _series(self) -> list[dict]:
+        data = self.coordinator.data or {}
+        return data.get("locations", {}).get(self._loc_key, [])
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and bool(self._series())
+
+    @property
+    def native_value(self):
+        series = self._series()
+        if self._sensor_key == "uv_index":
+            return _hourly_value_at(series, "uv_index", max_age_h=3.0)
+        if self._sensor_key == "uv_index_max_today":
+            from datetime import datetime as _dt
+
+            now = _dt.now(UTC)
+            today0 = now.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+            tomorrow0 = today0 + 86400
+            vals = [
+                e["uv_index"]
+                for e in series
+                if today0 <= e.get("ts", 0) < tomorrow0 and e.get("uv_index") is not None
+            ]
+            return round(max(vals), 1) if vals else None
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        if self._sensor_key == "uv_index":
+            return {"hourly_uv": self._series()}
+        return None
+
+
+class RainradarWnSensor(CoordinatorEntity, SensorEntity):
+    """Per-location WeatherNext 3 package sensor (raw variables)."""
+
+    _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"p10", "p90", "init_time"})
+
+    def __init__(
+        self,
+        coordinator,
+        entry: ConfigEntry,
+        loc_key: str,
+        loc_name: str,
+        slug: str,
+        description: SensorEntityDescription,
+        sensor_key: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._loc_key = loc_key
+        self._sensor_key = sensor_key
+        self.entity_description = description
+        self._attr_unique_id = f"{DOMAIN}_{slug}_{sensor_key}"
+        self._attr_device_info = _common_device_info(
+            entry, slug, f"Rainradar {loc_name}", "Weather Station"
+        )
+
+    def _hourly(self) -> list[dict]:
+        data = self.coordinator.data or {}
+        return data.get("locations", {}).get(self._loc_key, {}).get("hourly", [])
+
+    def _stats(self) -> dict[str, list[dict]]:
+        data = self.coordinator.data or {}
+        return (
+            data.get("locations", {}).get(self._loc_key, {}).get("hourly_stats", {})
+        )
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.last_update_success and bool(self._hourly())
+
+    @property
+    def native_value(self):
+        key_map = {
+            "solar_ghi": "solar_ghi",
+            "solar_direct": "solar_direct",
+            "cloud_cover_low": "cloud_cover_low",
+            "cloud_cover_mid": "cloud_cover_mid",
+            "cloud_cover_high": "cloud_cover_high",
+            "wind_speed_100m": "wind_speed_100m",
+            "wind_direction_100m": "wind_direction_100m",
+        }
+        if self._sensor_key in key_map:
+            return _hourly_value_at(self._hourly(), key_map[self._sensor_key])
+        if self._sensor_key in ("rain_risk_24h", "frost_risk_24h", "heat_risk_24h"):
+            return self._risk_value()
+        return None
+
+    def _risk_value(self) -> float | None:
+        """Fraction (%) of the next 24h meeting the risk condition."""
+        from datetime import datetime as _dt
+
+        hourly = self._hourly()
+        p90 = self._stats().get("p90", [])
+        p10 = self._stats().get("p10", [])
+        if not hourly:
+            return None
+        now_ts = _dt.now(UTC).timestamp()
+        # Include the current hour (its start may lie slightly in the past).
+        window_start = now_ts - 3600
+        window = [e for e in hourly if window_start <= e.get("ts", 0) <= now_ts + 24 * 3600]
+        if not window:
+            return None
+        p90_by_ts = {e.get("ts"): e for e in p90}
+        p10_by_ts = {e.get("ts"): e for e in p10}
+
+        def _stat(series: dict, key: str, name: str) -> float | None:
+            return series.get(key, {}).get(name)
+
+        hits = 0
+        checked = 0
+        for entry in window:
+            ts = entry.get("ts")
+            checked += 1
+            if self._sensor_key == "rain_risk_24h":
+                v = _stat(p90_by_ts, ts, "precipitation")
+                base = entry.get("precipitation") or 0.0
+                val = v if v is not None else base
+                if val is not None and val > 0.1:
+                    hits += 1
+            elif self._sensor_key == "frost_risk_24h":
+                v = _stat(p10_by_ts, ts, "temperature")
+                temp = v if v is not None else entry.get("temperature")
+                if temp is not None and temp < 0.5:
+                    hits += 1
+            elif self._sensor_key == "heat_risk_24h":
+                v = _stat(p90_by_ts, ts, "temperature")
+                temp = v if v is not None else entry.get("temperature")
+                if temp is not None and temp > 30.0:
+                    hits += 1
+        if not checked:
+            return None
+        return round(hits / checked * 100.0, 0)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        data = self.coordinator.data or {}
+        attrs: dict[str, Any] = {"init_time": data.get("init_time")}
+        if self._sensor_key in ("rain_risk_24h", "frost_risk_24h", "heat_risk_24h"):
+            stats = self._stats()
+            if stats.get("p10"):
+                attrs["p10"] = stats["p10"]
+            if stats.get("p90"):
+                attrs["p90"] = stats["p90"]
+        return attrs

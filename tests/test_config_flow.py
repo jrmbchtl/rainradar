@@ -110,3 +110,114 @@ async def test_scan_interval_bounds_enforced(hass: HomeAssistant) -> None:
     else:
         raise AssertionError("scan_interval below minimum should be rejected")
     assert schema({CONF_ZONES: [], CONF_DEVICE_TRACKERS: [], CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL})
+
+
+async def test_user_flow_includes_advanced_section(hass: HomeAssistant) -> None:
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    assert result["type"] == FlowResultType.FORM
+    schema_keys = [str(k) for k in result["data_schema"].schema.keys()]
+    assert any("advanced" in k for k in schema_keys)
+
+
+async def test_user_flow_wn_enabled_requires_service_account(hass: HomeAssistant) -> None:
+    """Enabling WeatherNext without credentials → form error, no entry."""
+    hass.states.async_set("zone.home", "zoning", {"latitude": 52.4, "longitude": 9.7})
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_ZONES: ["zone.home"],
+            CONF_DEVICE_TRACKERS: [],
+            CONF_SCAN_INTERVAL: 600,
+            "enable_forecast": True,
+            "enable_icon_eu": True,
+            "enable_uv": True,
+            CONF_ENABLE_WARNINGS: True,
+            "enable_air_quality": True,
+            "advanced": {
+                "enable_weathernext": True,
+                "wn_gcp_project_id": "my-project",
+                "enable_wn_overlay": True,
+                "enable_pkg_solar": False,
+                "enable_pkg_wind": False,
+                "enable_pkg_probability": False,
+                "enable_cams_uv": False,
+            },
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.FORM
+    assert result["errors"] == {"wn_service_account_json": "service_account_required"}
+
+
+async def test_user_flow_cams_requires_token(hass: HomeAssistant) -> None:
+    hass.states.async_set("zone.home", "zoning", {"latitude": 52.4, "longitude": 9.7})
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_ZONES: ["zone.home"],
+            CONF_DEVICE_TRACKERS: [],
+            CONF_SCAN_INTERVAL: 600,
+            "enable_forecast": True,
+            "enable_icon_eu": True,
+            "enable_uv": True,
+            CONF_ENABLE_WARNINGS: True,
+            "enable_air_quality": True,
+            "advanced": {
+                "enable_weathernext": False,
+                "wn_gcp_project_id": "",
+                "enable_wn_overlay": True,
+                "enable_pkg_solar": False,
+                "enable_pkg_wind": False,
+                "enable_pkg_probability": False,
+                "enable_cams_uv": True,
+            },
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.FORM
+    assert result["errors"] == {"cams_api_token": "cams_token_required"}
+
+
+async def test_user_flow_basic_submit_creates_entry_with_v3_defaults(
+    hass: HomeAssistant,
+) -> None:
+    """Submitting without touching the advanced section keeps WN3/CAMS off."""
+    hass.states.async_set("zone.home", "zoning", {"latitude": 52.4, "longitude": 9.7})
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_ZONES: ["zone.home"],
+            CONF_DEVICE_TRACKERS: [],
+            CONF_SCAN_INTERVAL: 600,
+            "enable_forecast": True,
+            "enable_icon_eu": True,
+            "enable_uv": True,
+            CONF_ENABLE_WARNINGS: True,
+            "enable_air_quality": True,
+            "advanced": {
+                "enable_weathernext": False,
+                "wn_gcp_project_id": "",
+                "enable_wn_overlay": True,
+                "enable_pkg_solar": False,
+                "enable_pkg_wind": False,
+                "enable_pkg_probability": False,
+                "enable_cams_uv": False,
+            },
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["options"]["enable_weathernext"] is False
+    assert result["options"]["enable_cams_uv"] is False
+    assert result["options"]["enable_wn_overlay"] is True

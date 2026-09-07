@@ -12,12 +12,48 @@
           "enable_icon_eu": "ICON-EU phasengetrennten Niederschlag aktivieren",
           "enable_uv": "UV-Index aktivieren (Open-Meteo)",
           "enable_warnings": "DWD-Unwetterwarnungen aktivieren",
-          "enable_air_quality": "Luftqualitätsindex aktivieren (Open-Meteo)"
+          "enable_air_quality": "Luftqualitätsindex aktivieren (Open-Meteo)",
+          "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
+          "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)"
+        },
+        "advanced": "Erweitert / Experimentell",
+        "sections": {
+          "advanced": {
+            "name": "Erweitert / Experimentell",
+            "description": "Optionale globale Datenquellen mit hoher Auflösung. WeatherNext 3 benötigt eine Google-Freischaltung und ein Service-Konto; CAMS UV benötigt ein kostenloses ADS-Token (https://ads.atmosphere.copernicus.eu).",
+            "data": {
+              "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
+              "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)",
+              "wn_service_account_json": "Service-Konto-JSON (vollständigen Schlüssel einfügen)",
+              "enable_wn_overlay": "Globaler WeatherNext-Niederschlagsoverlay (48h @ 1h)",
+              "enable_pkg_solar": "Solar-Paket (Einstrahlung, Direktstrahlung, Wolkenschichten)",
+              "enable_pkg_wind": "Wind-Paket (Windgeschwindigkeit und -richtung in 100 m)",
+              "enable_pkg_probability": "Wahrscheinlichkeits-Paket (24h Regen-/Frost-/Hitze-Risiko)",
+              "enable_cams_uv": "CAMS UV-Index (bewölkt, präzise, global)",
+              "cams_api_token": "ADS-API-Token (https://ads.atmosphere.copernicus.eu/how-to-api)",
+              "wn_credentials_status": "Status der WeatherNext-Zugangsdaten",
+              "cams_credentials_status": "Status der CAMS-Zugangsdaten"
+            }
+          }
+        },
+        "data_description": {
+          "wn_service_account_json": "Wird außerhalb der Optionen gespeichert; leer lassen, um den gespeicherten Schlüssel zu behalten.",
+          "cams_api_token": "Format 'user@host:key'. Leer lassen, um das gespeicherte Token zu behalten."
         }
       }
     },
     "abort": {
       "single_instance_allowed": "Nur eine Rainradar-Konfiguration ist erlaubt."
+    },
+    "error": {
+      "invalid_service_account_json": "Kein gültiges Google-Service-Konto-JSON (client_email fehlt).",
+      "service_account_required": "WeatherNext benötigt ein Service-Konto-JSON.",
+      "allowlist_pending": "WeatherNext-Zugriff noch nicht freigegeben – Google-Datenantrag stellen und auf Freischaltung warten (5-7 Tage).",
+      "invalid_service_account": "Google hat das Service-Konto abgelehnt (falscher Schlüssel oder fehlender Storage-Scope).",
+      "http_500": "Google Cloud Storage meldet einen Serverfehler; später erneut versuchen.",
+      "no_data_found": "Keine WeatherNext-Daten der letzten 8 Stunden gefunden.",
+      "cams_token_required": "CAMS UV benötigt ein ADS-API-Token.",
+      "invalid_token_format": "Das ADS-Token hat das Format 'user@example.com:geheimnis'."
     }
   },
   "options": {
@@ -32,7 +68,33 @@
           "enable_icon_eu": "ICON-EU phasengetrennten Niederschlag aktivieren",
           "enable_uv": "UV-Index aktivieren (Open-Meteo)",
           "enable_warnings": "DWD-Unwetterwarnungen aktivieren",
-          "enable_air_quality": "Luftqualitätsindex aktivieren (Open-Meteo)"
+          "enable_air_quality": "Luftqualitätsindex aktivieren (Open-Meteo)",
+          "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
+          "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)"
+        },
+        "advanced": "Erweitert / Experimentell",
+        "sections": {
+          "advanced": {
+            "name": "Erweitert / Experimentell",
+            "description": "Optionale globale Datenquellen mit hoher Auflösung. WeatherNext 3 benötigt eine Google-Freischaltung und ein Service-Konto; CAMS UV benötigt ein kostenloses ADS-Token (https://ads.atmosphere.copernicus.eu).",
+            "data": {
+              "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
+              "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)",
+              "wn_service_account_json": "Service-Konto-JSON (vollständigen Schlüssel einfügen)",
+              "enable_wn_overlay": "Globaler WeatherNext-Niederschlagsoverlay (48h @ 1h)",
+              "enable_pkg_solar": "Solar-Paket (Einstrahlung, Direktstrahlung, Wolkenschichten)",
+              "enable_pkg_wind": "Wind-Paket (Windgeschwindigkeit und -richtung in 100 m)",
+              "enable_pkg_probability": "Wahrscheinlichkeits-Paket (24h Regen-/Frost-/Hitze-Risiko)",
+              "enable_cams_uv": "CAMS UV-Index (bewölkt, präzise, global)",
+              "cams_api_token": "ADS-API-Token (https://ads.atmosphere.copernicus.eu/how-to-api)",
+              "wn_credentials_status": "Status der WeatherNext-Zugangsdaten",
+              "cams_credentials_status": "Status der CAMS-Zugangsdaten"
+            }
+          }
+        },
+        "data_description": {
+          "wn_service_account_json": "Wird außerhalb der Optionen gespeichert; leer lassen, um den gespeicherten Schlüssel zu behalten.",
+          "cams_api_token": "Format 'user@host:key'. Leer lassen, um das gespeicherte Token zu behalten."
         }
       }
     }

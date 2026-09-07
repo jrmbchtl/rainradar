@@ -20,6 +20,8 @@ from .const import (
     CONF_ENABLE_ICON_EU,
     CONF_ENABLE_UV,
     CONF_ENABLE_WARNINGS,
+    CONF_ENABLE_WEATHERNEXT,
+    CONF_ENABLE_WN_OVERLAY,
     CONF_SCAN_INTERVAL,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -84,6 +86,9 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cache_reprocessed = False
         self._mosmix_cache: dict[str, list[dict]] = {}
         self._mosmix_last_update: dict[str, float] = {}
+        self._wn_frames_enabled = entry.options.get(CONF_ENABLE_WN_OVERLAY, False) and (
+            entry.options.get(CONF_ENABLE_WEATHERNEXT, False)
+        )
 
         try:
             from importlib.util import find_spec
@@ -319,6 +324,83 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._mosmix_last_update[station_id] = now_ts
         return forecast
 
+    async def _generate_wn_frames(self) -> dict[str, list[dict]] | None:
+        """Render WN3 global precipitation frames (48h @ 1h steps).
+
+        Reuses the WeatherNext coordinator's already-fetched dataset when
+        present; renders lazily so an overlay failure never blocks DWD frames.
+        """
+        if not self._wn_frames_enabled:
+            return None
+        runtime = self.entry.runtime_data
+        wn_coord = getattr(runtime, "weathernext_coordinator", None) if runtime else None
+        if wn_coord is None or not wn_coord.last_update_success or not wn_coord.data:
+            return None
+
+        from . import weathernext as wn, wnframes
+
+        def _render() -> dict[str, list[dict]] | None:
+            from datetime import timedelta as _td
+
+            import numpy as np
+            import obstore
+            import xarray as xr
+            import zarr as zarr_mod
+
+            init_iso = wn_coord.data.get("init_time")
+            if not init_iso:
+                return None
+            init_dt = datetime.fromisoformat(init_iso)
+            url = wn._stats_object_url(init_dt)
+            store = obstore.store.GCSStore.from_url(url)
+            ds = xr.open_zarr(zarr_mod.storage.ObjectStore(store), chunks={})
+            var = "experimental_tp_1hr_mean"
+            if var not in ds:
+                var = "imerg_tp_1hr_mean"
+            if var not in ds:
+                return None
+
+            lat_name = next(d for d in ds[var].dims if d.startswith("lat"))
+            lon_name = next(d for d in ds[var].dims if d.startswith("lon"))
+
+            frames: list[dict] = []
+            # 48 hourly steps; sub-select to keep rendering sane (every step).
+            for step in range(48):
+                ts = (init_dt + _td(hours=step + 1)).timestamp()
+                if ts < datetime.now(UTC).timestamp() - 3600:
+                    continue
+                stamp = datetime.fromtimestamp(ts, tz=UTC).strftime(
+                    "%Y-%m-%dT%H-%M-%SZ"
+                )
+                path = self._cache_dir / "weathernext" / (
+                    safe_frame_filename(stamp)
+                )
+                if path.is_file():
+                    frames.append(
+                        {"ts": stamp, "url": f"{self._url_prefix}/weathernext/{path.name}"}
+                    )
+                    continue
+                sub = ds[var].isel(
+                    {d: 0 for d in ds[var].dims if d not in (lat_name, lon_name)}
+                )
+                grid = sub.values
+                if grid.ndim != 2:
+                    continue
+                vals = np.nan_to_num(grid * 1000.0, nan=-1.0)  # m → mm/h
+                rgba = wnframes.grid_to_rgba(vals)
+                wnframes.save_frame_png(path, rgba)
+                frames.append(
+                    {"ts": stamp, "url": f"{self._url_prefix}/weathernext/{path.name}"}
+                )
+            return {"nowcast": frames, "past": [], "layer": "weathernext"}
+
+        try:
+            return await asyncio.to_thread(_render)
+        except Exception as exc:
+            _LOGGER.debug("WN3 overlay rendering skipped: %s", exc)
+            return None
+
+
     @staticmethod
     def _interpolate_hourly_to_4h(
         entries: list[dict],
@@ -439,16 +521,20 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             mosmix_task = asyncio.create_task(_try_mosmix())
             om_temp_task = asyncio.create_task(_try_om_temp_forecast())
+            wn_frames_task = asyncio.create_task(self._generate_wn_frames())
 
             await self._evict_old_frames()
             frame_urls = await frame_task
             mosmix_by_location = await mosmix_task
             temp_forecast_4h = await om_temp_task
+            wn_frames = await wn_frames_task
 
             result: dict[str, Any] = {
                 "radar_frames": frame_urls,
                 "frame_error": self._last_frame_error,
             }
+            if wn_frames:
+                result["wn_frames"] = wn_frames
             if mosmix_by_location:
                 result["mosmix_by_location"] = mosmix_by_location
 

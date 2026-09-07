@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -158,3 +160,212 @@ async def test_weather_entity_available_at_zero_degrees(hass: HomeAssistant) -> 
         assert state.state != "unavailable", (
             f"{entity_id} unavailable at 0.0 °C (bool() regression)"
         )
+
+
+async def test_wn_package_sensors_created_when_enabled(hass: HomeAssistant) -> None:
+    """WN3 + packages enabled → package sensors registered and reporting."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Rainradar",
+        version=3,
+        data={},
+        options={
+            "locations": [],
+            "zones": ["zone.home"],
+            "device_trackers": [],
+            "scan_interval": 600,
+            "enable_forecast": True,
+            "enable_icon_eu": False,
+            "enable_uv": True,
+            "enable_warnings": True,
+            "enable_air_quality": False,
+            "enable_weathernext": True,
+            "enable_wn_overlay": True,
+            "enable_pkg_solar": True,
+            "enable_pkg_wind": True,
+            "enable_pkg_probability": True,
+            "enable_cams_uv": False,
+            "wn_gcp_project_id": "proj",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    from datetime import datetime
+
+    from custom_components.rainradar.credentials import async_save_credentials
+
+    await async_save_credentials(
+        hass,
+        entry.entry_id,
+        {
+            "wn_service_account_info": {
+                "type": "service_account",
+                "client_email": "sa@test.iam.googleapis.com",
+                "private_key": "x",
+                "token_uri": "https://oauth2.googleapis.com/token",
+            },
+            "wn_gcp_project_id": "proj",
+        },
+    )
+
+    patches = _patch_network()
+    for p in patches.values():
+        p.start()
+    try:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+
+        # Inject WN data directly into the coordinator before sensors read it.
+        await hass.async_block_till_done()
+        runtime = entry.runtime_data
+        wn_coord = runtime.weathernext_coordinator
+        assert wn_coord is not None
+        now = datetime.now(UTC)
+        wn_coord.data = {
+            "locations": {
+                "zone::zone.home": {
+                    "hourly": [
+                        {
+                            "ts": now.timestamp(),
+                            "temperature": 21.0,
+                            "solar_ghi": 480.0,
+                            "solar_direct": 300.0,
+                            "cloud_cover_low": 10.0,
+                            "cloud_cover_mid": 20.0,
+                            "cloud_cover_high": 30.0,
+                            "wind_speed_100m": 36.0,
+                            "wind_direction_100m": 270.0,
+                            "precipitation": 0.2,
+                        }
+                    ],
+                    "hourly_stats": {
+                        "p10": [{"ts": now.timestamp(), "temperature": 19.0}],
+                        "p90": [
+                            {"ts": now.timestamp(), "temperature": 31.0, "precipitation": 0.5}
+                        ],
+                    },
+                }
+            },
+            "init_time": now.isoformat(),
+        }
+        wn_coord.last_update_success = True
+        wn_coord.async_update_listeners()
+        await hass.async_block_till_done()
+    finally:
+        for p in patches.values():
+            p.stop()
+
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    for key, expected in (
+        ("solar_ghi", "480.0"),
+        ("solar_direct", "300.0"),
+        ("wind_speed_100m", "36.0"),
+        ("wind_direction_100m", "270.0"),
+        ("cloud_cover_high", "30.0"),
+        ("heat_risk_24h", "100.0"),
+        ("rain_risk_24h", "100.0"),
+    ):
+        uid = f"rainradar_zone_home_{key}"
+        entity_id = registry.async_get_entity_id("sensor", DOMAIN, uid)
+        assert entity_id, f"{uid} missing"
+        state = hass.states.get(entity_id)
+        assert state is not None and state.state == expected, (
+            f"{uid}: {state.state if state else None} != {expected}"
+        )
+
+
+async def test_cams_uv_sensors_created_when_enabled(hass: HomeAssistant) -> None:
+    """CAMS UV enabled → uv_index + uv_index_max_today sensors reporting."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Rainradar",
+        version=3,
+        data={},
+        options={
+            "locations": [],
+            "zones": ["zone.home"],
+            "device_trackers": [],
+            "scan_interval": 600,
+            "enable_forecast": True,
+            "enable_icon_eu": False,
+            "enable_uv": True,
+            "enable_warnings": True,
+            "enable_air_quality": False,
+            "enable_weathernext": False,
+            "enable_cams_uv": True,
+        },
+    )
+    entry.add_to_hass(hass)
+
+    from datetime import datetime, timedelta
+
+    from custom_components.rainradar.credentials import async_save_credentials
+
+    await async_save_credentials(
+        hass, entry.entry_id, {"cams_api_token": "user@example.com:secret"}
+    )
+
+    patches = _patch_network()
+    for p in patches.values():
+        p.start()
+    try:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        runtime = entry.runtime_data
+        cams_coord = runtime.cams_coordinator
+        assert cams_coord is not None
+        now = datetime.now(UTC)
+        cams_coord.data = {
+            "locations": {
+                "zone::zone.home": [
+                    {"ts": now.timestamp(), "uv_index": 4.2},
+                    {
+                        "ts": (now + timedelta(hours=3)).timestamp(),
+                        "uv_index": 6.0,
+                    },
+                ]
+            },
+            "run_time": now.isoformat(),
+        }
+        cams_coord.last_update_success = True
+        cams_coord.async_update_listeners()
+        await hass.async_block_till_done()
+    finally:
+        for p in patches.values():
+            p.stop()
+
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    uid = "rainradar_zone_home_uv_index"
+    entity_id = registry.async_get_entity_id("sensor", DOMAIN, uid)
+    assert entity_id, f"{uid} missing"
+    state = hass.states.get(entity_id)
+    assert state.state == "4.2"
+
+    uid_max = "rainradar_zone_home_uv_index_max_today"
+    entity_id_max = registry.async_get_entity_id("sensor", DOMAIN, uid_max)
+    assert entity_id_max, f"{uid_max} missing"
+    state_max = hass.states.get(entity_id_max)
+    assert state_max.state == "6.0"
+
+
+async def test_no_wn_or_cams_sensors_by_default(
+    hass: HomeAssistant, mock_config_entry
+) -> None:
+    """With everything disabled (default), no package/UV sensors are created."""
+    mock_config_entry.add_to_hass(hass)
+    await _setup(hass, mock_config_entry)
+
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    all_uids = [
+        e.unique_id
+        for e in registry.entities.values()
+        if e.config_entry_id == mock_config_entry.entry_id
+    ]
+    assert not any("solar_ghi" in u for u in all_uids)
+    assert not any("wind_speed_100m" in u for u in all_uids)
+    assert not any("rain_risk_24h" in u for u in all_uids)

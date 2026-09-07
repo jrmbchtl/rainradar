@@ -2,8 +2,16 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import NamedTuple
 
-from homeassistant.const import __version__ as HA_VERSION  # noqa: F401
+
+class LocationSpec(NamedTuple):
+    loc_key: str
+    name: str
+    source_entity: str
+    latitude: float
+    longitude: float
+    slug: str
 
 DOMAIN = "rainradar"
 
@@ -49,7 +57,7 @@ DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.5.22"
+INTEGRATION_VERSION = "0.5.23"
 
 ATTR_TEMPERATURE = "temperature"
 ATTR_HUMIDITY = "humidity"
@@ -288,6 +296,30 @@ SENSOR_TYPES = {
         "device_class": None,
         "state_class": "measurement",
     },
+    "ozone": {
+        "unit": "DU",
+        "icon": "mdi:alpha-o-circle-outline",
+        "device_class": None,
+        "state_class": "measurement",
+    },
+    "soil_temp_2cm": {
+        "unit": "°C",
+        "icon": "mdi:thermometer",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
+    "soil_temp_5cm": {
+        "unit": "°C",
+        "icon": "mdi:thermometer",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
+    "soil_temp_10cm": {
+        "unit": "°C",
+        "icon": "mdi:thermometer",
+        "device_class": "temperature",
+        "state_class": "measurement",
+    },
 }
 
 # DWD 10-minute "now" product configs
@@ -485,7 +517,7 @@ def pixel_intensity(r: int, g: int, b: int) -> float:
 
 
 def latlon_to_radar_pixel(lat: float, lon: float) -> tuple[int, int]:
-    """Convert (lat, lon) to (col, row) in the 1200×900 radar composite image."""
+    """Convert (lat, lon) to (col, row) in the 1200x900 radar composite image."""
     x = lon * 20037508.342789244 / 180.0
     y = math.log(math.tan(math.pi / 4 + lat * math.pi / 360.0)) * 6378137.0
     lo_min, la_min, lo_max, la_max = RADAR_BBOX_LONLAT
@@ -611,8 +643,12 @@ def apparent_temperature(temp_c: float, humidity_pct: float, wind_kmh: float) ->
 
 
 def frames_cache_dir(hass_config_path: str, entry_id: str) -> Path:
-    """Return the per-entry cache directory for prefetched radar frames."""
-    return Path(hass_config_path) / ".storage" / "rainradar" / entry_id
+    """Return the per-entry cache directory for prefetched radar frames.
+
+    Lives under ``<config>/rainradar/frames/<entry_id>`` — NOT under
+    ``.storage/`` which HA treats as internal state storage.
+    """
+    return Path(hass_config_path) / "rainradar" / "frames" / entry_id
 
 
 
@@ -642,16 +678,16 @@ def location_slug(name: str) -> str:
     return name.lower().replace(" ", "_").replace("-", "_").replace(".", "_")
 
 
-def resolve_location_specs(hass, entry) -> list[tuple[str, str, str, float, float, str]]:
-    """Resolve configured zones/trackers to (loc_key, name, source_entity, lat, lon, slug)."""
-    location_specs: list[tuple[str, str, str, float, float, str]] = []
+def resolve_location_specs(hass, entry) -> list[LocationSpec]:
+    """Resolve configured zones/trackers to LocationSpec list."""
+    location_specs: list[LocationSpec] = []
 
     for loc in entry.options.get(CONF_LOCATIONS, []):
         lat = loc.get(CONF_LATITUDE)
         lon = loc.get(CONF_LONGITUDE)
         name = loc.get(CONF_NAME, "unknown")
         if lat is not None and lon is not None:
-            location_specs.append((f"loc::{name}", name, "manual", float(lat), float(lon), location_slug(name)))
+            location_specs.append(LocationSpec(f"loc::{name}", name, "manual", float(lat), float(lon), location_slug(name)))
 
     zone_entities = normalize_entity_list(entry.options.get(CONF_ZONES))
     for zone_entity in zone_entities:
@@ -663,7 +699,7 @@ def resolve_location_specs(hass, entry) -> list[tuple[str, str, str, float, floa
         if zlat is None or zlon is None:
             continue
         zname = zone_state.attributes.get("friendly_name", zone_entity)
-        location_specs.append((f"zone::{zone_entity}", zname, zone_entity, float(zlat), float(zlon), location_slug(zone_entity)))
+        location_specs.append(LocationSpec(f"zone::{zone_entity}", zname, zone_entity, float(zlat), float(zlon), location_slug(zone_entity)))
 
     tracker_entities = normalize_entity_list(entry.options.get(CONF_DEVICE_TRACKERS))
     if not tracker_entities:
@@ -675,7 +711,7 @@ def resolve_location_specs(hass, entry) -> list[tuple[str, str, str, float, floa
             tlon = tracker_state.attributes.get("longitude")
             if tlat is not None and tlon is not None:
                 tname = tracker_state.attributes.get("friendly_name", tracker_entity)
-                location_specs.append((f"tracker::{tracker_entity}", tname, tracker_entity, float(tlat), float(tlon), location_slug(tracker_entity)))
+                location_specs.append(LocationSpec(f"tracker::{tracker_entity}", tname, tracker_entity, float(tlat), float(tlon), location_slug(tracker_entity)))
 
     return location_specs
 

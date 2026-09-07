@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+import logging
 import math
-from datetime import datetime, timezone
 
 import aiohttp
-import logging
 
 from .const import DWD_OPENDATA, GERMANY_BBOX_LONLAT
 
@@ -85,9 +85,9 @@ def _is_active(bis_datum: str) -> bool:
             year=end // 10000,
             month=(end // 100) % 100,
             day=end % 100,
-            tzinfo=timezone.utc,
+            tzinfo=UTC,
         )
-        cutoff = datetime.now(timezone.utc)
+        cutoff = datetime.now(UTC)
         return (cutoff - end_dt).days < 60
     except (ValueError, OverflowError):
         return False

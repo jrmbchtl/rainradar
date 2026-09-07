@@ -1,0 +1,33 @@
+[tool.ruff]
+target-version = "py313"
+exclude = ["custom_components/rainradar/frontend"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",  # line too long — HA style allows longer lines
+    "SIM105", # contextlib.suppress vs try/except — readability
+    "SIM117", # nested with — aiohttp idiom
+]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+# Fixture/builder helpers in tests may be loose
+"tests/*" = ["SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+norecursedirs = [".git", "node_modules", "custom_components/rainradar/frontend"]

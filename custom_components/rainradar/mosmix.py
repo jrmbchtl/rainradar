@@ -1,45 +1,60 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import io
+import logging
+import time
 import xml.etree.ElementTree as ET
 import zipfile
-from datetime import datetime, timezone
 
 import aiohttp
-import logging
 
 from .const import DWD_MOSMIX_BASE
 
 _LOGGER = logging.getLogger(__name__)
 
 MOSMIX_UPDATE_INTERVAL = 3600
+MOSMIX_CACHE_MAX_AGE = MOSMIX_UPDATE_INTERVAL * 2
 
 _kml_cache: dict[str, tuple[float, dict[str, dict]]] = {}
 
-MOSMIX_ELEMENT_MAP = {
-    "TTT": ("temperature", 273.15),
-    "TX": ("temp_max", 273.15),
-    "TN": ("temp_min", 273.15),
-    "Td": ("dew_point", 273.15),
-    "PPPP": ("pressure", 0.01),
-    "FF": ("wind_speed", 3.6),
-    "DD": ("wind_direction", 1.0),
-    "FX1": ("wind_gust", 3.6),
-    "Neff": ("cloud_cover", 12.5),
-    "N": ("cloud_cover_fallback", 12.5),
-    "Nl": ("cloud_cover_low", 12.5),
-    "Nm": ("cloud_cover_mid", 12.5),
-    "Nh": ("cloud_cover_high", 12.5),
-    "RR1c": ("precip_rate", 1.0),
-    "RRS1c": ("precip_rate_strat", 1.0),
-    "RR3c": ("precip_rate_3h", 0.333),
-    "Rd02": ("precip_probability", 1.0),
-    "SunD1": ("sunshine_duration", 1.0),
-    "Rad1h": ("solar_radiation_raw", 0.0002778),
-    "VV": ("visibility_raw", 0.001),
-    "ww": ("weather_code", 1.0),
-    "W1W2": ("weather_code_w2", 1.0),
+KML_NS = {"kml": "http://www.opengis.net/kml/2.2"}
+
+# The Forecast/value elements live in DWD's point-forecast extension
+# namespace (verified against MOSMIX_S_LATEST_240.kmz). The historically
+# assumed https://dwd.de/de/XML_synop/MOSMIX-S namespace does NOT occur in
+# current files — using it made every lookup miss and logged
+# "Station XXXXX not found in MOSMIX-S" for all stations.
+DWD_FORECAST_NS = "https://opendata.dwd.de/weather/lib/pointforecast_dwd_extension_V1_0.xsd"
+DWD_NS = {"dwd": DWD_FORECAST_NS}
+
+MOSMIX_ELEMENT_MAP: dict[str, tuple[str, float, float]] = {
+    # element: (attr, scale, offset)  →  value * scale + offset
+    # Kelvin-based elements convert via offset (K → °C); the historical
+    # implementation multiplied by 273.15, producing garbage values.
+    "TTT": ("temperature", 1.0, -273.15),
+    "TX": ("temp_max", 1.0, -273.15),
+    "TN": ("temp_min", 1.0, -273.15),
+    "Td": ("dew_point", 1.0, -273.15),
+    "PPPP": ("pressure", 0.01, 0.0),
+    "FF": ("wind_speed", 3.6, 0.0),
+    "DD": ("wind_direction", 1.0, 0.0),
+    "FX1": ("wind_gust", 3.6, 0.0),
+    "Neff": ("cloud_cover", 1.0, 0.0),
+    "N": ("cloud_cover_fallback", 1.0, 0.0),
+    "Nl": ("cloud_cover_low", 1.0, 0.0),
+    "Nm": ("cloud_cover_mid", 1.0, 0.0),
+    "Nh": ("cloud_cover_high", 1.0, 0.0),
+    "RR1c": ("precip_rate", 1.0, 0.0),
+    "RRS1c": ("precip_rate_strat", 1.0, 0.0),
+    "RR3c": ("precip_rate_3h", 0.333, 0.0),
+    "Rd02": ("precip_probability", 1.0, 0.0),
+    "SunD1": ("sunshine_duration", 1.0, 0.0),
+    "Rad1h": ("solar_radiation_raw", 0.0002778, 0.0),
+    "VV": ("visibility_raw", 0.001, 0.0),
+    "ww": ("weather_code", 1.0, 0.0),
+    "W1W2": ("weather_code_w2", 1.0, 0.0),
 }
 
 
@@ -49,24 +64,22 @@ def _parse_mosmix_kml(kml_bytes: bytes) -> dict:
     Returns a dict keyed by station ID with forecast data.
     """
     root = ET.fromstring(kml_bytes)
-    ns = {"dwd": "https://dwd.de/de/XML_synop/MOSMIX-S",
-          "kml": "http://www.opengis.net/kml/2.2"}
 
     stations: dict[str, dict] = {}
 
     for pm in root.iter("{http://www.opengis.net/kml/2.2}Placemark"):
-        name_el = pm.find("kml:name", ns)
+        name_el = pm.find("kml:name", KML_NS)
         if name_el is None:
             continue
         station_id = name_el.text.strip()
 
         forecast_times: list[dict[str, float]] = []
-        for fc in pm.findall("dwd:Forecast", ns):
-            element_name = fc.get("dwd:elementName", "")
+        for fc in pm.findall(".//dwd:Forecast", DWD_NS):
+            element_name = fc.get(f"{{{DWD_FORECAST_NS}}}elementName", "")
             if element_name not in MOSMIX_ELEMENT_MAP:
                 continue
-            attr_name, scale = MOSMIX_ELEMENT_MAP[element_name]
-            value_el = fc.find("dwd:value", ns)
+            attr_name, scale, offset = MOSMIX_ELEMENT_MAP[element_name]
+            value_el = fc.find("dwd:value", DWD_NS)
             if value_el is None or value_el.text is None:
                 continue
             values = value_el.text.strip().split()
@@ -77,7 +90,7 @@ def _parse_mosmix_kml(kml_bytes: bytes) -> dict:
                     val = float(val_str)
                     if val < -900:
                         continue
-                    forecast_times[i][attr_name] = round(val * scale, 1)
+                    forecast_times[i][attr_name] = round(val * scale + offset, 1)
                 except (ValueError, TypeError):
                     pass
 
@@ -87,14 +100,47 @@ def _parse_mosmix_kml(kml_bytes: bytes) -> dict:
     return stations
 
 
+def _evict_stale_cache(now_ts: float) -> None:
+    """Drop cached KML runs older than the max age (and any non-run keys)."""
+    for run_key in list(_kml_cache.keys()):
+        ts, _stations = _kml_cache[run_key]
+        if (now_ts - ts) >= MOSMIX_CACHE_MAX_AGE:
+            _kml_cache.pop(run_key, None)
+
+
+def _cache_run_key() -> str | None:
+    """Return the freshest cached run key within its validity window."""
+    now_ts = time.time()
+    fresh = [
+        (ts, run_key)
+        for run_key, (ts, _stations) in _kml_cache.items()
+        if (now_ts - ts) < MOSMIX_UPDATE_INTERVAL
+    ]
+    if not fresh:
+        return None
+    return max(fresh)[1]
+
+
 def get_mosmix_station_ids() -> set[str] | None:
     """Return set of station IDs present in the cached MOSMIX-S KML, or None if not cached."""
-    now_ts = datetime.now(timezone.utc).timestamp()
-    for run_key in list(_kml_cache.keys()):
-        ts, stations = _kml_cache[run_key]
-        if (now_ts - ts) < MOSMIX_UPDATE_INTERVAL * 2:
-            return set(stations.keys())
-    return None
+    run_key = _cache_run_key()
+    if run_key is None:
+        return None
+    return set(_kml_cache[run_key][1].keys())
+
+
+def _candidate_urls(now: datetime) -> list[str]:
+    """Return MOSMIX-S URLs to try, best first.
+
+    DWD publishes MOSMIX-S hourly (filenames carry the issue hour) plus a
+    ``MOSMIX_S_LATEST_240.kmz`` alias. Try the exact current run first so the
+    cache stays keyed by run, then fall back to LATEST.
+    """
+    date_str = now.strftime("%Y%m%d%H")
+    return [
+        f"{DWD_MOSMIX_BASE}/MOSMIX_S_{date_str}_240.kmz",
+        f"{DWD_MOSMIX_BASE}/MOSMIX_S_LATEST_240.kmz",
+    ]
 
 
 async def fetch_mosmix_forecast(
@@ -104,44 +150,67 @@ async def fetch_mosmix_forecast(
     """Fetch MOSMIX-S forecast for a station.
 
     Returns a list of hourly forecast dicts or None on failure.
+
+    Note: many CDC observation stations are not MOSMIX forecast sites, so a
+    None result for a valid station ID is an expected condition, not an error.
     """
     try:
-        now = datetime.now(timezone.utc)
-        run_hour = (now.hour // 6) * 6
-        run_dt = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
-        run_key = run_dt.strftime("%Y%m%d%H")
+        now = datetime.now(UTC)
+        now_ts = time.time()
 
-        cached = _kml_cache.get(run_key)
-        if cached and (now.timestamp() - cached[0]) < MOSMIX_UPDATE_INTERVAL:
-            stations = cached[1]
+        _evict_stale_cache(now_ts)
+
+        run_key = _cache_run_key()
+        if run_key is not None:
+            stations = _kml_cache[run_key][1]
         else:
-            date_str = run_dt.strftime("%Y%m%d%H")
-            url = f"{DWD_MOSMIX_BASE}/MOSMIX_S_{date_str}_240.kmz"
+            stations = None
+            last_error: str | None = None
+            for url in _candidate_urls(now):
+                try:
+                    async with asyncio.timeout(60):
+                        async with session.get(url) as resp:
+                            if resp.status != 200:
+                                last_error = f"HTTP {resp.status}"
+                                continue
+                            data = await resp.read()
+                except TimeoutError:
+                    last_error = "timeout"
+                    continue
 
-            async with asyncio.timeout(60):
-                async with session.get(url) as resp:
-                    if resp.status != 200:
-                        _LOGGER.warning("MOSMIX-S fetch failed: HTTP %s", resp.status)
-                        return None
-                    data = await resp.read()
+                kmz = zipfile.ZipFile(io.BytesIO(data))
+                kml_name = next(
+                    (n for n in kmz.namelist() if n.endswith(".kml")), None
+                )
+                if kml_name is None:
+                    last_error = "KMZ missing KML file"
+                    continue
 
-            kmz = zipfile.ZipFile(io.BytesIO(data))
-            kml_name = next(
-                (n for n in kmz.namelist() if n.endswith(".kml")), None
-            )
-            if kml_name is None:
-                _LOGGER.warning("MOSMIX-S KMZ missing KML file")
+                kml_bytes = kmz.read(kml_name)
+                stations = _parse_mosmix_kml(kml_bytes)
+                # Cache under the exact-run key when the filename carries one,
+                # otherwise under the issue hour we requested.
+                date_prefix = url.rsplit("/", 1)[-1].split("_")[1]
+                cache_key = (
+                    date_prefix
+                    if date_prefix.isdigit() and len(date_prefix) == 10
+                    else now.strftime("%Y%m%d%H")
+                )
+                _kml_cache[cache_key] = (now_ts, stations)
+                run_key = cache_key
+                break
+
+            if stations is None:
+                _LOGGER.warning("MOSMIX-S fetch failed: %s", last_error or "no URL succeeded")
                 return None
 
-            kml_bytes = kmz.read(kml_name)
-            stations = _parse_mosmix_kml(kml_bytes)
-            _kml_cache[run_key] = (now.timestamp(), stations)
-
         if station_id not in stations:
-            _LOGGER.warning("Station %s not found in MOSMIX-S", station_id)
+            # Expected: most CDC observation stations are not MOSMIX sites.
+            _LOGGER.debug("Station %s not found in MOSMIX-S", station_id)
             return None
 
         raw_fc = stations[station_id]["forecasts"]
+        run_dt = datetime.strptime(run_key, "%Y%m%d%H").replace(tzinfo=UTC)
         result = []
         for i, fc in enumerate(raw_fc):
             ts = run_dt.timestamp() + (i + 1) * 3600
@@ -167,7 +236,7 @@ async def fetch_mosmix_forecast(
 
         return result
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _LOGGER.warning("MOSMIX-S fetch timeout for %s", station_id)
         return None
     except Exception as exc:

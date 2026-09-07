@@ -3,14 +3,16 @@
     "step": {
       "user": {
         "title": "Rainradar",
-        "description": "Configure your rain radar location.",
+        "description": "Configure your rain radar locations.",
         "data": {
           "zones": "Zones",
           "device_trackers": "Device trackers",
           "scan_interval": "Update interval (seconds)",
-          "enable_forecast": "Enable MOSMIX-S forecast (48h hourly)",
+          "enable_forecast": "Enable MOSMIX-S forecast (hourly)",
           "enable_icon_eu": "Enable ICON-EU phase-separated precipitation",
-          "enable_uv": "Enable UV index (Open-Meteo)"
+          "enable_uv": "Enable UV index (Open-Meteo)",
+          "enable_warnings": "Enable DWD severe weather warnings",
+          "enable_air_quality": "Enable air quality (Open-Meteo)"
         }
       }
     },
@@ -26,9 +28,11 @@
           "zones": "Zones",
           "device_trackers": "Device trackers",
           "scan_interval": "Update interval (seconds)",
-          "enable_forecast": "Enable MOSMIX-S forecast (48h hourly)",
+          "enable_forecast": "Enable MOSMIX-S forecast (hourly)",
           "enable_icon_eu": "Enable ICON-EU phase-separated precipitation",
-          "enable_uv": "Enable UV index (Open-Meteo)"
+          "enable_uv": "Enable UV index (Open-Meteo)",
+          "enable_warnings": "Enable DWD severe weather warnings",
+          "enable_air_quality": "Enable air quality (Open-Meteo)"
         }
       }
     }

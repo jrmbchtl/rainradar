@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import logging
-from datetime import datetime, timezone
 
 import aiohttp
 
-from .const import OPEN_METEO_BASE, OPEN_METEO_AIR_QUALITY_BASE
+from .const import OPEN_METEO_AIR_QUALITY_BASE, OPEN_METEO_BASE
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -100,7 +100,7 @@ async def fetch_openmeteo_weather(
         # UV max (daily)
         uv_max_list = daily.get("uv_index_max")
         dates = daily.get("time", [])
-        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_str = datetime.now(UTC).strftime("%Y-%m-%d")
         if uv_max_list and dates:
             for i, d in enumerate(dates):
                 if d == today_str and i < len(uv_max_list):
@@ -136,9 +136,9 @@ async def fetch_openmeteo_weather(
                 try:
                     dt = datetime.fromisoformat(t_str)
                     if dt.tzinfo is None:
-                        dt = dt.replace(tzinfo=timezone.utc)
+                        dt = dt.replace(tzinfo=UTC)
                     else:
-                        dt = dt.astimezone(timezone.utc)
+                        dt = dt.astimezone(UTC)
                     entry["ts"] = dt.timestamp()
                 except (ValueError, TypeError):
                     continue
@@ -179,7 +179,7 @@ async def fetch_openmeteo_weather(
                     break
                 entry: dict = {}
                 try:
-                    dt = datetime.fromisoformat(t_str).replace(tzinfo=timezone.utc)
+                    dt = datetime.fromisoformat(t_str).replace(tzinfo=UTC)
                     entry["ts"] = dt.timestamp()
                 except (ValueError, TypeError):
                     continue
@@ -200,7 +200,7 @@ async def fetch_openmeteo_weather(
 
         return result if result else None
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _LOGGER.debug("Open-Meteo fetch timeout")
         return None
     except Exception as exc:
@@ -251,7 +251,7 @@ async def fetch_openmeteo_air_quality(
                     pass
         return result if result else None
 
-    except asyncio.TimeoutError:
+    except TimeoutError:
         _LOGGER.debug("Open-Meteo AQ fetch timeout")
         return None
     except Exception as exc:

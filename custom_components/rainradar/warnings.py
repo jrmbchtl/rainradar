@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import aiohttp
@@ -20,11 +21,12 @@ async def fetch_dwd_warnings(session: aiohttp.ClientSession) -> list[dict] | Non
     Returns None on failure.
     """
     try:
-        async with session.get(DWD_WARNINGS_URL) as resp:
-            if resp.status != 200:
-                _LOGGER.debug("DWD warnings fetch failed: HTTP %s", resp.status)
-                return None
-            data = await resp.json()
+        async with asyncio.timeout(15):
+            async with session.get(DWD_WARNINGS_URL) as resp:
+                if resp.status != 200:
+                    _LOGGER.debug("DWD warnings fetch failed: HTTP %s", resp.status)
+                    return None
+                data = await resp.json()
         return data.get("warnings")
     except Exception as exc:
         _LOGGER.debug("DWD warnings fetch error: %s", exc)

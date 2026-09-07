@@ -6,19 +6,18 @@ from homeassistant.components.diagnostics import async_redact_data
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
-
 TO_REDACT = {"station_name", "station_id"}
 
 
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: ConfigEntry
 ) -> dict[str, Any]:
-    weather_coordinator = hass.data[DOMAIN][entry.entry_id]
-    radar_coordinator = hass.data[DOMAIN].get(f"{entry.entry_id}_radar")
+    runtime = entry.runtime_data
+    weather_coordinator = runtime.weather_coordinator if runtime else None
+    radar_coordinator = runtime.radar_coordinator if runtime else None
 
-    weather_data = weather_coordinator.data or {}
-    radar_data = radar_coordinator.data if radar_coordinator else {}
+    weather_data = (weather_coordinator.data if weather_coordinator else None) or {}
+    radar_data = (radar_coordinator.data if radar_coordinator else None) or {}
 
     return async_redact_data(
         {
@@ -31,7 +30,7 @@ async def async_get_config_entry_diagnostics(
             "radar_data": {
                 "past": len(radar_data.get("radar_frames", {}).get("past", [])),
                 "nowcast": len(radar_data.get("radar_frames", {}).get("nowcast", [])),
-                "forecasts": sum(len(v) for v in radar_data.get("forecasts_by_station", {}).values()),
+                "forecast_locations": len(radar_data.get("mosmix_by_location", {})),
                 "last_update": radar_data.get("last_update"),
             },
         },

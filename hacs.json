@@ -2,7 +2,6 @@
   "name": "Rainradar",
   "render_readme": true,
   "iot_class": "cloud_polling",
-  "domains": ["rainradar"],
   "country": ["DE"],
   "homeassistant": "2026.5.0"
 }

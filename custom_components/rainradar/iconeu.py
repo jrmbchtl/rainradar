@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 import io
+import logging
 import math
-import re
-from datetime import datetime, timezone
 
 import aiohttp
-import logging
 
 from .const import DWD_ICON_EU_BASE
 
@@ -75,7 +74,7 @@ async def _fetch_icon_var(
     forecast_step: int,
 ) -> list[list[float]] | None:
     """Fetch a single ICON-EU variable for a given run and step."""
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     run_dt = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
     date_str = run_dt.strftime("%Y%m%d%H")
     step_str = f"{forecast_step:03d}"
@@ -123,7 +122,7 @@ async def fetch_icon_eu_precip(
     Returns dict with rain_rate, snow_rate, and optionally
     fresh_snow, snow_depth.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     run_hour = (now.hour // 6) * 6
     run_dt = now.replace(hour=run_hour, minute=0, second=0, microsecond=0)
     hours_since_run = (now.timestamp() - run_dt.timestamp()) / 3600

@@ -1,24 +1,50 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 import logging
 import os
-from pathlib import Path
-
-import aiohttp
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, frames_cache_dir, frames_url_prefix, INTEGRATION_VERSION, resolve_location_specs
+from .const import (
+    CONF_DEVICE_TRACKER,
+    CONF_DEVICE_TRACKERS,
+    CONF_ENABLE_AIR_QUALITY,
+    CONF_ENABLE_FORECAST,
+    CONF_ENABLE_ICON_EU,
+    CONF_ENABLE_UV,
+    CONF_ENABLE_WARNINGS,
+    CONF_LOCATIONS,
+    CONF_ZONES,
+    DOMAIN,
+    INTEGRATION_VERSION,
+    frames_cache_dir,
+    frames_url_prefix,
+    resolve_location_specs,
+)
+from .station_mapping import DWDStation
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR, Platform.WEATHER]
 
 _CARD_REGISTERED_KEY = f"{DOMAIN}_card_registered"
 _FRAMES_PATH_REGISTERED_KEY = f"{DOMAIN}_frames_paths"
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+@dataclass
+class RainradarEntryData:
+    """Runtime data for a rainradar config entry."""
+
+    weather_coordinator: object
+    radar_coordinator: object
+    stations: list[DWDStation] = field(default_factory=list)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -27,26 +53,24 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    from .weather_coordinator import WeatherDataCoordinator
     from .radar_coordinator import RadarDataCoordinator
-    from .station_mapping import DWDStation
+    from .weather_coordinator import WeatherDataCoordinator
 
-    session = aiohttp.ClientSession()
     stations: list[DWDStation] = []
+    weather_coordinator = WeatherDataCoordinator(hass, entry, stations)
+    radar_coordinator = RadarDataCoordinator(hass, entry, stations)
 
-    weather_coordinator = WeatherDataCoordinator(hass, entry, session, stations)
-    radar_coordinator = RadarDataCoordinator(hass, entry, session, stations)
-
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = weather_coordinator
-    hass.data[DOMAIN][f"{entry.entry_id}_radar"] = radar_coordinator
-    hass.data[DOMAIN]["session"] = session
-    hass.data[DOMAIN]["stations"] = stations
+    entry.runtime_data = RainradarEntryData(
+        weather_coordinator=weather_coordinator,
+        radar_coordinator=radar_coordinator,
+        stations=stations,
+    )
 
     await _register_frames_path(hass, entry.entry_id)
 
     radar_coordinator.data = {
         "locations": {
-            loc[0]: {
+            loc.loc_key: {
                 "rain_2h_total": 0,
                 "rain_slots": [],
                 "warning_level": 0,
@@ -67,9 +91,53 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             exc,
         )
 
-    asyncio.create_task(_initial_radar_refresh(radar_coordinator))
+    entry.async_create_background_task(
+        hass,
+        _initial_radar_refresh(radar_coordinator),
+        f"{DOMAIN}_initial_radar_refresh_{entry.entry_id}",
+    )
+
+    try:
+        from .openmap_bridge import (
+            async_register_overlay,
+            async_setup_delayed_openmap_listener,
+        )
+
+        await async_register_overlay(hass, entry)
+        async_setup_delayed_openmap_listener(hass, entry)
+    except Exception as exc:
+        _LOGGER.debug("OpenMap bridge setup failed: %s", exc)
 
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate old config entries to the current version.
+
+    NOTE: HA resolves this hook on the integration component (__init__.py),
+    NOT on the config flow class.
+    """
+    if entry.version > 2:
+        # Downgrade from a future version: not supported.
+        return False
+
+    if entry.version == 1:
+        data = {**entry.data}
+        options = {**entry.options}
+        options.setdefault(CONF_ZONES, options.pop(CONF_LOCATIONS, []))
+        options.setdefault(CONF_DEVICE_TRACKERS, [])
+        legacy_tracker = options.get(CONF_DEVICE_TRACKER)
+        if legacy_tracker and not options[CONF_DEVICE_TRACKERS]:
+            options[CONF_DEVICE_TRACKERS] = [legacy_tracker]
+        options.setdefault(CONF_ENABLE_FORECAST, True)
+        options.setdefault(CONF_ENABLE_ICON_EU, True)
+        options.setdefault(CONF_ENABLE_UV, True)
+        options.setdefault(CONF_ENABLE_WARNINGS, True)
+        options.setdefault(CONF_ENABLE_AIR_QUALITY, True)
+        hass.config_entries.async_update_entry(entry, data=data, options=options, version=2)
+
+    _LOGGER.info("Config entry %s migrated to version %s", entry.entry_id, entry.version)
     return True
 
 
@@ -97,17 +165,20 @@ async def _register_card(hass: HomeAssistant) -> None:
         return
     url = f"/{DOMAIN}/v{INTEGRATION_VERSION}/rainradar-card.js"
 
-    try:
-        if hasattr(hass.http, "async_register_static_paths"):
-            from homeassistant.components.http import StaticPathConfig
+    if hass.http is not None:
+        try:
+            if hasattr(hass.http, "async_register_static_paths"):
+                from homeassistant.components.http import StaticPathConfig
 
-            await hass.http.async_register_static_paths(
-                [StaticPathConfig(url, card_path, cache_headers=False)]
-            )
-        else:
-            hass.http.register_static_path(url, card_path, cache_headers=False)
-    except Exception as exc:
-        _LOGGER.warning("Failed to register static path %s: %s", url, exc)
+                await hass.http.async_register_static_paths(
+                    [StaticPathConfig(url, card_path, cache_headers=False)]
+                )
+            else:
+                hass.http.register_static_path(url, card_path, cache_headers=False)
+        except Exception as exc:
+            _LOGGER.warning("Failed to register static path %s: %s", url, exc)
+    else:
+        _LOGGER.debug("Rainradar: http component not available for card URL %s", url)
 
     try:
         resources = hass.data.get("lovelace", {}).get("resources")
@@ -161,47 +232,34 @@ async def _register_frames_path(hass: HomeAssistant, entry_id: str) -> None:
     registered = hass.data.setdefault(_FRAMES_PATH_REGISTERED_KEY, set())
     if entry_id in registered:
         return
+
+    if hass.http is None:
+        _LOGGER.warning(
+            "Rainradar: http component not available; radar frame URLs for %s "
+            "will not be served (card overlays will be empty)",
+            entry_id,
+        )
+        return
     registered.add(entry_id)
 
     cache_dir = frames_cache_dir(hass.config.path(""), entry_id)
     await asyncio.to_thread(cache_dir.mkdir, parents=True, exist_ok=True)
     url = frames_url_prefix(entry_id)
 
-    _LOGGER.info(
-        "Rainradar: registering frames static path url=%s dir=%s exists=%s",
-        url,
-        cache_dir,
-        cache_dir.exists(),
-    )
-
     from homeassistant.components.http import StaticPathConfig
 
     await hass.http.async_register_static_paths(
         [StaticPathConfig(url, str(cache_dir), cache_headers=False)]
     )
-    _LOGGER.info("Rainradar: frames static path registered for %s", entry_id)
+    _LOGGER.debug("Rainradar: frames static path registered for %s", entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    weather_coordinator = hass.data[DOMAIN].get(entry.entry_id)
-    radar_coordinator = hass.data[DOMAIN].get(f"{entry.entry_id}_radar")
-
-    if weather_coordinator:
-        await weather_coordinator.async_close()
-    if radar_coordinator:
-        await radar_coordinator.async_close()
-
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-        hass.data[DOMAIN].pop(f"{entry.entry_id}_radar", None)
-        session = hass.data[DOMAIN].pop("session", None)
-        if session and not session.closed:
-            await session.close()
-
+        entry.runtime_data = None
     return unload_ok
 
 
 async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await async_unload_entry(hass, entry)
-    await async_setup_entry(hass, entry)
+    await hass.config_entries.async_reload(entry.entry_id)

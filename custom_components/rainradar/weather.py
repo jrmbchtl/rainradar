@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from homeassistant.components.weather import (
+    Forecast,
     WeatherEntity,
     WeatherEntityFeature,
-    Forecast,
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -27,24 +27,36 @@ from .const import (
 )
 from .weather_coordinator import WeatherDataCoordinator
 
+CONDITION_ICONS = {
+    "sunny": "mdi:weather-sunny",
+    "partlycloudy": "mdi:weather-partly-cloudy",
+    "cloudy": "mdi:weather-cloudy",
+    "fog": "mdi:weather-fog",
+    "rainy": "mdi:weather-rainy",
+    "snowy": "mdi:weather-snowy",
+    "lightning": "mdi:weather-lightning",
+    "exceptional": "mdi:alert",
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    weather_coordinator = hass.data[DOMAIN][entry.entry_id]
+    runtime = entry.runtime_data
+    weather_coordinator = runtime.weather_coordinator
     entities: list[WeatherEntity] = []
 
     location_specs = resolve_location_specs(hass, entry)
-    for loc_key, loc_name, _source_entity, _lat, _lon, slug in location_specs:
+    for loc in location_specs:
         entities.append(
             RainradarWeatherEntity(
                 weather_coordinator,
                 entry,
-                loc_key,
-                loc_name,
-                slug,
+                loc.loc_key,
+                loc.name,
+                loc.slug,
             )
         )
 
@@ -103,17 +115,18 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         if mosmix:
             self._mosmix_cache = mosmix
         self.async_write_ha_state()
+        self.hass.async_create_task(self.async_update_listeners(None))
 
     @property
     def available(self) -> bool:
         if not (self.coordinator.last_update_success and self.coordinator.data):
             return False
-        return bool(
-            self.coordinator.data.get("locations", {}).get(self._loc_key, {}).get("temperature")
-        )
+        temperature = self._loc_data().get("temperature")
+        return temperature is not None
 
     def _loc_data(self) -> dict:
-        return self.coordinator.data.get("locations", {}).get(self._loc_key, {})
+        data = self.coordinator.data or {}
+        return data.get("locations", {}).get(self._loc_key, {})
 
     @property
     def condition(self):
@@ -128,12 +141,21 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         return None
 
     @property
+    def icon(self) -> str | None:
+        cond = self.condition
+        return CONDITION_ICONS.get(cond, "mdi:weather-cloudy") if cond else "mdi:weather-cloudy"
+
+    @property
     def native_temperature(self):
         return self._loc_data().get("temperature")
 
     @property
     def native_apparent_temperature(self):
         return self._loc_data().get("apparent_temperature")
+
+    @property
+    def native_precipitation(self):
+        return self._loc_data().get("precipitation")
 
     @property
     def humidity(self):
@@ -185,7 +207,10 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
 
     @property
     def _radar_coord(self):
-        return self.hass.data[DOMAIN].get(f"{self._entry.entry_id}_radar")
+        runtime = self._entry.runtime_data
+        if runtime is None:
+            return None
+        return runtime.radar_coordinator
 
     def _mosmix_forecast(self):
         radar_coord = self._radar_coord
@@ -223,7 +248,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
         if ts is None:
             return None
         entry: dict[str, Any] = {
-            "datetime": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            "datetime": datetime.fromtimestamp(ts, tz=UTC).isoformat(),
         }
         if is_daytime is not None:
             entry["is_daytime"] = is_daytime
@@ -282,7 +307,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
             return []
         daily: dict[str, dict] = {}
         for fc in mosmix:
-            dt = datetime.fromtimestamp(fc["ts"], tz=timezone.utc)
+            dt = datetime.fromtimestamp(fc["ts"], tz=UTC)
             day_key = dt.strftime("%Y-%m-%d")
             if day_key not in daily:
                 daily[day_key] = {"ts": fc["ts"], "temp_min": 99, "temp_max": -99}
@@ -323,7 +348,7 @@ class RainradarWeatherEntity(CoordinatorEntity, WeatherEntity):
     def _twice_daily_from_hourly(self, hourly: list[dict]) -> list[Forecast]:
         periods: dict[str, dict] = {}
         for fc in hourly:
-            dt = datetime.fromtimestamp(fc["ts"], tz=timezone.utc)
+            dt = datetime.fromtimestamp(fc["ts"], tz=UTC)
             hour = dt.hour
             if hour < 6:
                 day_key = (dt - timedelta(days=1)).strftime("%Y-%m-%d")

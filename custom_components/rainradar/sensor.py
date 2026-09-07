@@ -5,55 +5,53 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
+    ATTR_APPARENT_TEMPERATURE,
+    ATTR_CLOUD_COVERAGE,
+    ATTR_CONDITION,
+    ATTR_DEW_POINT,
+    ATTR_FRESH_SNOW,
+    ATTR_HUMIDITY,
+    ATTR_PRECIP_PROBABILITY,
+    ATTR_PRECIPITATION,
+    ATTR_PRESSURE,
+    ATTR_RAIN_2H_TOTAL,
+    ATTR_RAIN_24H,
+    ATTR_RAIN_RATE,
+    ATTR_RAIN_SLOTS,
+    ATTR_SNOW_24H,
+    ATTR_SNOW_RATE,
+    ATTR_SOLAR_RADIATION,
+    ATTR_SOURCE_ENTITY,
+    ATTR_STATION_DISTANCE,
+    ATTR_STATION_ID,
+    ATTR_STATION_NAME,
+    ATTR_SUNSHINE_DURATION,
+    ATTR_TEMPERATURE,
+    ATTR_TEMPERATURE_FORECAST,
+    ATTR_UV_INDEX,
+    ATTR_UV_INDEX_MAX,
+    ATTR_VISIBILITY,
+    ATTR_WARNING_COUNT,
+    ATTR_WARNING_HEADLINE,
+    ATTR_WARNING_LEVEL,
+    ATTR_WEATHER_CODE,
+    ATTR_WEATHER_CODE_TEXT,
+    ATTR_WIND_DIRECTION,
+    ATTR_WIND_GUST,
+    ATTR_WIND_SPEED,
     DOMAIN,
     INTEGRATION_VERSION,
     SENSOR_TYPES,
-    ATTR_TEMPERATURE,
-    ATTR_HUMIDITY,
-    ATTR_WIND_SPEED,
-    ATTR_WIND_DIRECTION,
-    ATTR_WIND_GUST,
-    ATTR_PRESSURE,
-    ATTR_DEW_POINT,
-    ATTR_CLOUD_COVERAGE,
-    ATTR_PRECIPITATION,
-    ATTR_PRECIP_PROBABILITY,
-    ATTR_RAIN_RATE,
-    ATTR_SNOW_RATE,
-    ATTR_FRESH_SNOW,
-    ATTR_RAIN_24H,
-    ATTR_SNOW_24H,
-    ATTR_SOLAR_RADIATION,
-    ATTR_SUNSHINE_DURATION,
-    ATTR_VISIBILITY,
-    ATTR_WEATHER_CODE,
-    ATTR_WEATHER_CODE_TEXT,
-    ATTR_APPARENT_TEMPERATURE,
-    ATTR_UV_INDEX,
-    ATTR_UV_INDEX_MAX,
-    ATTR_CONDITION,
-    ATTR_STATION_NAME,
-    ATTR_STATION_ID,
-    ATTR_STATION_DISTANCE,
-    ATTR_SOURCE_ENTITY,
-    ATTR_LAST_UPDATE,
-    ATTR_FRAME_ERROR,
-    ATTR_WARNING_LEVEL,
-    ATTR_WARNING_HEADLINE,
-    ATTR_WARNING_COUNT,
-    ATTR_RAIN_SLOTS,
-    ATTR_RAIN_2H_TOTAL,
-    ATTR_TEMPERATURE_FORECAST,
     resolve_location_specs,
 )
-from .weather_coordinator import WeatherDataCoordinator
 from .radar_coordinator import RadarDataCoordinator
+from .weather_coordinator import WeatherDataCoordinator
 
 SENSOR_KEY_MAP = {
     "temperature": ATTR_TEMPERATURE,
@@ -88,6 +86,10 @@ SENSOR_KEY_MAP = {
     "warning_level": ATTR_WARNING_LEVEL,
     "warning_headline": ATTR_WARNING_HEADLINE,
     "warning_count": ATTR_WARNING_COUNT,
+    "ozone": "ozone",
+    "soil_temp_2cm": "soil_temp_2cm",
+    "soil_temp_5cm": "soil_temp_5cm",
+    "soil_temp_10cm": "soil_temp_10cm",
 }
 
 CORE_SENSORS = ("temperature", "humidity", "wind_speed", "wind_direction", "condition")
@@ -102,6 +104,8 @@ OPTIONAL_SENSORS = (
     "uv_index", "uv_index_max",
     "rain_2h_total",
     "warning_level", "warning_headline", "warning_count",
+    "ozone",
+    "soil_temp_2cm", "soil_temp_5cm", "soil_temp_10cm",
 )
 DEBUG_STATION_SENSORS = ("station_name", "station_id", "station_distance")
 
@@ -111,8 +115,9 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    weather_coordinator: WeatherDataCoordinator = hass.data[DOMAIN][entry.entry_id]
-    radar_coordinator: RadarDataCoordinator = hass.data[DOMAIN][f"{entry.entry_id}_radar"]
+    runtime = entry.runtime_data
+    weather_coordinator = runtime.weather_coordinator
+    radar_coordinator = runtime.radar_coordinator
     entities: list[SensorEntity] = []
 
     entities.append(
@@ -139,7 +144,7 @@ async def async_setup_entry(
     )
 
     location_specs = resolve_location_specs(hass, entry)
-    for loc_key, loc_name, _source_entity, _lat, _lon, slug in location_specs:
+    for loc in location_specs:
         for sensor_key in CORE_SENSORS + OPTIONAL_SENSORS:
             if sensor_key not in SENSOR_TYPES:
                 continue
@@ -149,12 +154,12 @@ async def async_setup_entry(
                     weather_coordinator,
                     radar_coordinator,
                     entry,
-                    loc_key,
-                    loc_name,
-                    slug,
+                    loc.loc_key,
+                    loc.name,
+                    loc.slug,
                     SensorEntityDescription(
-                        key=f"{sensor_key}_{slug}",
-                        name=f"{loc_name} {sensor_key.replace('_', ' ').title()}",
+                        key=f"{sensor_key}_{loc.slug}",
+                        name=f"{loc.name} {sensor_key.replace('_', ' ').title()}",
                         native_unit_of_measurement=desc.get("unit"),
                         icon=desc.get("icon"),
                         device_class=desc.get("device_class"),
@@ -165,13 +170,13 @@ async def async_setup_entry(
             )
         entities.append(
             RainradarRainSlotsSensor(
-                radar_coordinator, entry, loc_key, loc_name, slug,
+                radar_coordinator, entry, loc.loc_key, loc.name, loc.slug,
             )
         )
 
         entities.append(
             RainradarTemperatureForecastSensor(
-                radar_coordinator, entry, loc_key, loc_name, slug,
+                radar_coordinator, entry, loc.loc_key, loc.name, loc.slug,
             )
         )
 
@@ -181,12 +186,12 @@ async def async_setup_entry(
                 RainradarDebugStationSensor(
                     weather_coordinator,
                     entry,
-                    loc_key,
-                    loc_name,
-                    slug,
+                    loc.loc_key,
+                    loc.name,
+                    loc.slug,
                     SensorEntityDescription(
-                        key=f"{sensor_key}_{slug}",
-                        name=f"{loc_name} {sensor_key.replace('_', ' ').title()}",
+                        key=f"{sensor_key}_{loc.slug}",
+                        name=f"{loc.name} {sensor_key.replace('_', ' ').title()}",
                         native_unit_of_measurement=desc.get("unit"),
                         icon=desc.get("icon"),
                         device_class=desc.get("device_class"),
@@ -221,7 +226,7 @@ async def async_setup_entry(
         )
     )
 
-    _cleanup_deprecated_entities(hass, [s[5] for s in location_specs])
+    _cleanup_deprecated_entities(hass, [loc.slug for loc in location_specs])
     async_add_entities(entities)
 
 
@@ -247,6 +252,7 @@ def _common_device_info(entry: ConfigEntry, suffix: str, name: str, model: str) 
 
 class RainradarFramesSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"frames"})
 
     def __init__(
         self,
@@ -435,6 +441,7 @@ class RainradarDebugStationSensor(CoordinatorEntity, SensorEntity):
 
 class RainradarRainSlotsSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"slots"})
 
     def __init__(
         self,
@@ -477,6 +484,7 @@ class RainradarRainSlotsSensor(CoordinatorEntity, SensorEntity):
 
 class RainradarTemperatureForecastSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"forecast"})
 
     def __init__(
         self,
@@ -550,5 +558,15 @@ class RainradarHealthSensor(CoordinatorEntity, SensorEntity):
         return True
 
     @property
-    def native_value(self):
-        return self.coordinator.last_update_success
+    def native_value(self) -> str:
+        ok = bool(self.coordinator.last_update_success) and bool(
+            getattr(self.coordinator, "health_state", True)
+        )
+        return "on" if ok else "off"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        return {
+            "last_update_success": self.coordinator.last_update_success,
+            "health_state": getattr(self.coordinator, "health_state", True),
+        }

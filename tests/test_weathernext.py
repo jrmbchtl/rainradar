@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -117,3 +117,33 @@ def test_wnframes_grid_to_rgba():
     assert rgba[1, 1, 3] == 255
     assert rgba[2, 2, 3] == 255
     assert not (rgba[2, 2, 0] == rgba[2, 2, 1] == rgba[2, 2, 2])
+
+
+def test_zarr_missing_detection(monkeypatch):
+    """zarr_missing() flips correctly based on import availability."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _blocking_import(name, *args, **kwargs):
+        if name == "zarr" or name == "obstore":
+            raise ImportError(f"blocked for test: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocking_import)
+    assert wn.zarr_missing() is True
+
+
+async def test_fetch_point_forecast_returns_none_when_zarr_missing(caplog):
+    """Without zarr, point extraction returns None and warns once."""
+    import logging
+
+    with patch.object(wn, "zarr_missing", return_value=True), patch.object(
+        wn, "_ZARR_WARNED", False
+    ):
+        with caplog.at_level(logging.WARNING, logger="custom_components.rainradar.weathernext"):
+            result = await wn.fetch_point_forecast(
+                _session_ok(), "tok", datetime(2026, 9, 6, 6, tzinfo=UTC), 52.0, 9.7
+            )
+    assert result is None
+    assert any("optional packages 'zarr'" in r.message for r in caplog.records)

@@ -57,6 +57,14 @@ class WeatherNextCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not locations:
             return {"locations": {}, "init_time": None}
 
+        if wn.zarr_missing():
+            # zarr/obstore cannot be auto-installed on every platform (musl).
+            # Dormant mode: the one-time warning is logged by _warn_zarr_missing;
+            # park the coordinator with empty data and no polling failure spam.
+            self.update_interval = timedelta(seconds=WEATHERNEXT_UPDATE_INTERVAL * 24)
+            wn._warn_zarr_missing()
+            return {"locations": {}, "init_time": None}
+
         token = await wn.get_access_token(
             self._credentials["wn_service_account_info"], self._session
         )

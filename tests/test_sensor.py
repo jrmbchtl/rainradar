@@ -298,7 +298,7 @@ async def test_cams_uv_sensors_created_when_enabled(hass: HomeAssistant) -> None
     )
     entry.add_to_hass(hass)
 
-    from datetime import datetime, timedelta
+    from datetime import datetime
 
     from custom_components.rainradar.credentials import async_save_credentials
 
@@ -316,14 +316,14 @@ async def test_cams_uv_sensors_created_when_enabled(hass: HomeAssistant) -> None
         cams_coord = runtime.cams_coordinator
         assert cams_coord is not None
         now = datetime.now(UTC)
+        # Deterministic "today" slots: 09:00 and 15:00 UTC of the current UTC day.
+        slot1 = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        slot2 = now.replace(hour=15, minute=0, second=0, microsecond=0)
         cams_coord.data = {
             "locations": {
                 "zone::zone.home": [
-                    {"ts": now.timestamp(), "uv_index": 4.2},
-                    {
-                        "ts": (now + timedelta(hours=3)).timestamp(),
-                        "uv_index": 6.0,
-                    },
+                    {"ts": slot1.timestamp(), "uv_index": 4.2},
+                    {"ts": slot2.timestamp(), "uv_index": 6.0},
                 ]
             },
             "run_time": now.isoformat(),
@@ -342,7 +342,15 @@ async def test_cams_uv_sensors_created_when_enabled(hass: HomeAssistant) -> None
     entity_id = registry.async_get_entity_id("sensor", DOMAIN, uid)
     assert entity_id, f"{uid} missing"
     state = hass.states.get(entity_id)
-    assert state.state == "4.2"
+    # uv_index picks the entry nearest 'now' within 3h; before 12:00 UTC that's
+    # the 09:00 slot (4.2), after 18:00 neither slot is within 3h → 'unknown'.
+    now_hour = datetime.now(UTC).hour
+    if now_hour < 12:
+        assert state.state == "4.2"
+    elif now_hour >= 18:
+        assert state.state == "unknown"
+    else:
+        assert state.state == "6.0"
 
     uid_max = "rainradar_zone_home_uv_index_max_today"
     entity_id_max = registry.async_get_entity_id("sensor", DOMAIN, uid_max)

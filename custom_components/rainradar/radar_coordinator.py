@@ -332,12 +332,16 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """
         if not self._wn_frames_enabled:
             return None
+        from . import weathernext as wn
+
+        if wn.zarr_missing():
+            return None
         runtime = self.entry.runtime_data
         wn_coord = getattr(runtime, "weathernext_coordinator", None) if runtime else None
         if wn_coord is None or not wn_coord.last_update_success or not wn_coord.data:
             return None
 
-        from . import weathernext as wn, wnframes
+        from . import wnframes
 
         def _render() -> dict[str, list[dict]] | None:
             from datetime import timedelta as _td

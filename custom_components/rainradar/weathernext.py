@@ -156,6 +156,10 @@ async def preflight(
     service_account_info: dict[str, Any],
 ) -> str | None:
     """Validate credentials + allowlist. Returns an error string, or None if OK."""
+    if zarr_missing():
+        # Credentials may still be valid; surface the zarr situation so users
+        # aren't surprised when forecasts don't appear.
+        _warn_zarr_missing()
     token = await get_access_token(service_account_info, session)
     if token is None:
         return "invalid_service_account"
@@ -207,8 +211,15 @@ async def fetch_point_forecast(
     Returns ``{"hourly": [...], "hourly_stats": {"p10": [...], "p90": [...]}}``
     where hourly entries mirror the internal forecast dict shape (ts, temperature,
     precipitation, wind_speed, cloud_cover, solar GHI/direct, ...). None on error.
+
+    Requires the optional ``zarr`` + ``obstore`` packages (not manifest
+    requirements — see ``zarr_missing``). Returns None with a one-time warning
+    when they are unavailable.
     """
-    if zarr_missing() or not token:
+    if not token:
+        return None
+    if zarr_missing():
+        _warn_zarr_missing()
         return None
 
     def _extract() -> dict[str, list[dict]] | None:
@@ -368,7 +379,13 @@ def _surface_convert(var: str, value: float) -> float:
 
 
 def zarr_missing() -> bool:
-    """True when the zarr/obstore dependency pair is unavailable."""
+    """True when the zarr/obstore dependency pair is unavailable.
+
+    These are deliberately NOT manifest requirements: ``numcodecs`` (pulled in
+    by zarr) ships no cp314 musllinux wheel, so a hard requirement breaks pip
+    install entirely on musl-based HA deployments (Alpine containers).
+    Power users can install them manually to enable WN3.
+    """
     try:
         import obstore  # noqa: F401
         import zarr  # noqa: F401
@@ -376,3 +393,20 @@ def zarr_missing() -> bool:
         return False
     except ImportError:
         return True
+
+
+_ZARR_WARNED = False
+
+
+def _warn_zarr_missing() -> None:
+    """Log the zarr hint once per HA process, at WARNING level."""
+    global _ZARR_WARNED
+    if _ZARR_WARNED:
+        return
+    _ZARR_WARNED = True
+    _LOGGER.warning(
+        "WeatherNext 3 is enabled but the optional packages 'zarr' and "
+        "'obstore' are not installed (they cannot be auto-installed on all "
+        "platforms). Install them manually via pip to enable WN3 forecasts; "
+        "all other Rainradar features work without them."
+    )

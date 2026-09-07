@@ -1,13 +1,12 @@
 {
   "domain": "rainradar",
   "name": "Rainradar",
-  "icon": "mdi:weather-rainy",
   "codeowners": ["@rainradar"],
   "config_flow": true,
   "documentation": "https://github.com/jorim/rainradar",
   "issue_tracker": "https://github.com/jorim/rainradar/issues",
   "integration_type": "hub",
-  "homeassistant": "2026.9.1",
+  "homeassistant": "2026.9.0",
   "iot_class": "cloud_polling",
   "requirements": [
     "eccodes>=1.5.0",
@@ -18,6 +17,6 @@
     "google-auth>=2.0.0",
     "cdsapi>=0.7.0"
   ],
-  "version": "0.6.0",
+  "version": "0.6.1",
   "loggers": ["custom_components.rainradar"]
 }

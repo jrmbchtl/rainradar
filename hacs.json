@@ -1,7 +1,6 @@
 {
   "name": "Rainradar",
   "render_readme": true,
-  "iot_class": "cloud_polling",
   "country": ["DE"],
-  "homeassistant": "2026.9.1"
+  "homeassistant": "2026.9.0"
 }

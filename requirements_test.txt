@@ -1,8 +1,15 @@
 # Test-only dependencies for the rainradar test suite.
-# Keep the homeassistant pin in sync with manifest.json's "homeassistant" key.
+# The homeassistant pin is the DEV DEVICE version (2026.9.1) used for testing;
+# the minimum version users need is declared in manifest.json (2026.9.0).
 homeassistant==2026.9.1
 pytest>=8.0
 pytest-asyncio>=0.23
 pytest-homeassistant-custom-component>=0.13.200
 freezegun>=1.4
 aiohttp>=3.9
+# Test-suite + integration imports (test_cams needs xarray+scipy for the netCDF fixture).
+# numpy/pandas are pinned to the versions HA 2026.9.1 ships to keep pip check clean.
+xarray
+scipy
+numpy==2.3.2
+pandas==2.3.3

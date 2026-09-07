@@ -30,4 +30,7 @@ combine-as-imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# CI runs bare `pytest` (no CWD in sys.path) — tests import the integration
+# as `custom_components.rainradar`, so the repo root must be importable.
+pythonpath = ["."]
 norecursedirs = [".git", "node_modules", "custom_components/rainradar/frontend"]

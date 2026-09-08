@@ -69,7 +69,7 @@ DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.6.2"
+INTEGRATION_VERSION = "0.6.3"
 
 WEATHERNEXT_STATS_BUCKET = "weathernext3_statistics_spatial"
 WEATHERNEXT_STATS_PREFIX = "weathernext_3_0_0_statistics/zarr"

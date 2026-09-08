@@ -221,3 +221,59 @@ async def test_user_flow_basic_submit_creates_entry_with_v3_defaults(
     assert result["options"]["enable_weathernext"] is False
     assert result["options"]["enable_cams_uv"] is False
     assert result["options"]["enable_wn_overlay"] is True
+
+
+async def test_user_flow_schema_serializes_for_frontend(hass: HomeAssistant) -> None:
+    """Regression: the advanced section must serialize as an expandable group.
+
+    A plain nested vol.Schema crashed HA's flow-manager response with
+    ``ValueError: unable to serialize schema`` when the frontend requested
+    the form (only reproducible through the serializer path, not through
+    schema validation).
+    """
+    import homeassistant  # noqa: F401  (installs probatio as voluptuous first)
+    from homeassistant.helpers.config_validation import (
+        custom_serializer as cv_custom_serializer,
+    )
+    import probatio.codecs.fields as fields
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    assert result["type"] == FlowResultType.FORM
+    serialized = fields.to_field_list(
+        result["data_schema"], custom_serializer=cv_custom_serializer
+    )
+    names = [f["name"] for f in serialized]
+    assert "advanced" in names
+    advanced = next(f for f in serialized if f["name"] == "advanced")
+    assert advanced["type"] == "expandable"
+    assert advanced["expanded"] is False  # collapsed by design
+    sub_names = [f["name"] for f in advanced["schema"]]
+    assert "enable_weathernext" in sub_names
+    assert "cams_api_token" in sub_names
+
+
+async def test_options_flow_schema_serializes_for_frontend(hass: HomeAssistant) -> None:
+    """Same regression for the options flow form."""
+    from homeassistant.helpers.config_validation import (
+        custom_serializer as cv_custom_serializer,
+    )
+    import probatio.codecs.fields as fields
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Rainradar",
+        version=3,
+        data={},
+        options={CONF_ZONES: ["zone.home"], CONF_DEVICE_TRACKERS: []},
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == FlowResultType.FORM
+    serialized = fields.to_field_list(
+        result["data_schema"], custom_serializer=cv_custom_serializer
+    )
+    advanced = next(f for f in serialized if f["name"] == "advanced")
+    assert advanced["type"] == "expandable"

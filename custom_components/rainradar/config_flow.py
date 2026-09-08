@@ -5,6 +5,7 @@ from typing import Any
 
 from homeassistant import config_entries
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
 from homeassistant.helpers import aiohttp_client, selector
 import voluptuous as vol
 
@@ -159,7 +160,13 @@ def _build_schema(
         ): selector.BooleanSelector(),
     }
     if advanced_schema is not None:
-        fields[vol.Optional(ADVANCED_SECTION, default={})] = advanced_schema
+        # Must be a data_entry_flow.section — the frontend serializer only
+        # knows how to render `section` objects as expandable groups; a plain
+        # nested vol.Schema raises "unable to serialize schema" in the
+        # flow-manager response.
+        fields[
+            vol.Optional(ADVANCED_SECTION)
+        ] = section(advanced_schema, {"collapsed": True})
     return vol.Schema(fields)
 
 

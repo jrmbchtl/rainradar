@@ -31,12 +31,12 @@
               "cams_api_token": "ADS API token (see README for how to create one)",
               "wn_credentials_status": "WeatherNext credentials status",
               "cams_credentials_status": "CAMS credentials status"
+            },
+            "data_description": {
+              "wn_service_account_json": "Stored outside config entry options; leave empty to keep the currently stored key.",
+              "cams_api_token": "Format 'user@host:key'. Leave empty to keep the currently stored token."
             }
           }
-        },
-        "data_description": {
-          "wn_service_account_json": "Stored outside config entry options; leave empty to keep the currently stored key.",
-          "cams_api_token": "Format 'user@host:key'. Leave empty to keep the currently stored token."
         }
       }
     },
@@ -85,12 +85,12 @@
               "cams_api_token": "ADS API token (see README for how to create one)",
               "wn_credentials_status": "WeatherNext credentials status",
               "cams_credentials_status": "CAMS credentials status"
+            },
+            "data_description": {
+              "wn_service_account_json": "Stored outside config entry options; leave empty to keep the currently stored key.",
+              "cams_api_token": "Format 'user@host:key'. Leave empty to keep the currently stored token."
             }
           }
-        },
-        "data_description": {
-          "wn_service_account_json": "Stored outside config entry options; leave empty to keep the currently stored key.",
-          "cams_api_token": "Format 'user@host:key'. Leave empty to keep the currently stored token."
         }
       }
     }

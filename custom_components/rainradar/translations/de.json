@@ -16,7 +16,6 @@
           "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
           "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)"
         },
-        "advanced": "Erweitert / Experimentell",
         "sections": {
           "advanced": {
             "name": "Erweitert / Experimentell",
@@ -33,12 +32,12 @@
               "cams_api_token": "ADS-API-Token (siehe README zur Erstellung)",
               "wn_credentials_status": "Status der WeatherNext-Zugangsdaten",
               "cams_credentials_status": "Status der CAMS-Zugangsdaten"
+            },
+            "data_description": {
+              "wn_service_account_json": "Wird außerhalb der Optionen gespeichert; leer lassen, um den gespeicherten Schlüssel zu behalten.",
+              "cams_api_token": "Format 'user@host:key'. Leer lassen, um das gespeicherte Token zu behalten."
             }
           }
-        },
-        "data_description": {
-          "wn_service_account_json": "Wird außerhalb der Optionen gespeichert; leer lassen, um den gespeicherten Schlüssel zu behalten.",
-          "cams_api_token": "Format 'user@host:key'. Leer lassen, um das gespeicherte Token zu behalten."
         }
       }
     },
@@ -72,7 +71,6 @@
           "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
           "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)"
         },
-        "advanced": "Erweitert / Experimentell",
         "sections": {
           "advanced": {
             "name": "Erweitert / Experimentell",
@@ -89,12 +87,12 @@
               "cams_api_token": "ADS-API-Token (siehe README zur Erstellung)",
               "wn_credentials_status": "Status der WeatherNext-Zugangsdaten",
               "cams_credentials_status": "Status der CAMS-Zugangsdaten"
+            },
+            "data_description": {
+              "wn_service_account_json": "Wird außerhalb der Optionen gespeichert; leer lassen, um den gespeicherten Schlüssel zu behalten.",
+              "cams_api_token": "Format 'user@host:key'. Leer lassen, um das gespeicherte Token zu behalten."
             }
           }
-        },
-        "data_description": {
-          "wn_service_account_json": "Wird außerhalb der Optionen gespeichert; leer lassen, um den gespeicherten Schlüssel zu behalten.",
-          "cams_api_token": "Format 'user@host:key'. Leer lassen, um das gespeicherte Token zu behalten."
         }
       }
     }

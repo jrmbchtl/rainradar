@@ -42,7 +42,7 @@ from .const import (
     safe_frame_filename,
 )
 from .iconeu import fetch_icon_eu_precip
-from .mosmix import fetch_mosmix_forecast, get_mosmix_station_ids
+from .mosmix import fetch_mosmix_forecasts, get_mosmix_station_ids
 from .openmeteo import fetch_openmeteo_air_quality, fetch_openmeteo_weather
 from .station_mapping import DWDStation, find_nearest_stations
 from .warnings import (
@@ -84,8 +84,6 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._url_prefix: str = frames_url_prefix(entry.entry_id)
         self._last_frame_error: str | None = None
         self._cache_reprocessed = False
-        self._mosmix_cache: dict[str, list[dict]] = {}
-        self._mosmix_last_update: dict[str, float] = {}
         self._wn_frames_enabled = entry.options.get(CONF_ENABLE_WN_OVERLAY, False) and (
             entry.options.get(CONF_ENABLE_WEATHERNEXT, False)
         )
@@ -173,6 +171,12 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @staticmethod
     def _neutralize_png_inplace(path: Path) -> None:
+        """Flip R==G==B pixels (DWD "no data" grey / "no rain" white) to alpha=0.
+
+        Numpy vectorized: ~50 MB / 0.05 s per 1200x900 frame (the previous
+        getdata() loop was ~220 MB / 5 s — a major memory spike with 4
+        concurrent frame jobs).
+        """
         try:
             from PIL import Image
         except ImportError:
@@ -181,20 +185,36 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             img = Image.open(path)
             if img.mode != "RGBA":
                 img = img.convert("RGBA")
-            data_list = list(img.getdata())
-            new_data = []
             NEUTRAL_TOL = 4
-            for r, g, b, _a in data_list:
-                if (
-                    abs(r - g) <= NEUTRAL_TOL
-                    and abs(g - b) <= NEUTRAL_TOL
-                    and abs(r - b) <= NEUTRAL_TOL
-                ):
-                    new_data.append((r, g, b, 0))
-                else:
-                    new_data.append((r, g, b, 255))
-            img.putdata(new_data)
-            img.save(path, "PNG", optimize=True)
+            try:
+                import numpy as np
+
+                arr = np.array(img)  # writable RGBA copy (~4.3 MB)
+                r = arr[..., 0].astype(np.int16)
+                g = arr[..., 1].astype(np.int16)
+                b = arr[..., 2].astype(np.int16)
+                neutral = (
+                    (np.abs(r - g) <= NEUTRAL_TOL)
+                    & (np.abs(g - b) <= NEUTRAL_TOL)
+                    & (np.abs(r - b) <= NEUTRAL_TOL)
+                )
+                arr[..., 3] = np.where(neutral, 0, 255)
+                Image.fromarray(arr, "RGBA").save(path, "PNG", optimize=True)
+            except ImportError:
+                # numpy unavailable — fall back to the per-pixel loop.
+                data_list = list(img.getdata())
+                new_data = []
+                for r, g, b, _a in data_list:
+                    if (
+                        abs(r - g) <= NEUTRAL_TOL
+                        and abs(g - b) <= NEUTRAL_TOL
+                        and abs(r - b) <= NEUTRAL_TOL
+                    ):
+                        new_data.append((r, g, b, 0))
+                    else:
+                        new_data.append((r, g, b, 255))
+                img.putdata(new_data)
+                img.save(path, "PNG", optimize=True)
         except Exception as exc:
             _LOGGER.debug("PIL neutralize failed for %s: %s", path, exc)
 
@@ -312,17 +332,6 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         if count:
             _LOGGER.info("Rainradar: reprocessed %d cached frames", count)
-
-    async def _fetch_mosmix(self, station_id: str) -> list[dict] | None:
-        now_ts = datetime.now(UTC).timestamp()
-        last = self._mosmix_last_update.get(station_id, 0)
-        if station_id in self._mosmix_cache and (now_ts - last) < 3600:
-            return self._mosmix_cache[station_id]
-        forecast = await fetch_mosmix_forecast(self._session, station_id)
-        if forecast is not None:
-            self._mosmix_cache[station_id] = forecast
-            self._mosmix_last_update[station_id] = now_ts
-        return forecast
 
     async def _generate_wn_frames(self) -> dict[str, list[dict]] | None:
         """Render WN3 global precipitation frames (48h @ 1h steps).
@@ -457,46 +466,61 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             async def _try_mosmix():
                 if not enable_forecast or not location_specs:
                     return None
-                mosmix_result: dict[str, list[dict]] = {}
                 now_ts = datetime.now(UTC).timestamp()
-                for loc in location_specs:
-                    mosmix_ids = get_mosmix_station_ids()
-                    if mosmix_ids:
+
+                # Collect the candidate MOSMIX stations for all locations, then
+                # fetch them in ONE batched streaming request per hour.
+                mosmix_ids = get_mosmix_station_ids()
+                wanted_by_location: dict[str, list[str]] = {}
+                if mosmix_ids:
+                    for loc in location_specs:
                         candidates = [
-                            (s, d)
-                            for s, d in find_nearest_stations(
+                            s.station_id
+                            for s, _d in find_nearest_stations(
                                 loc.latitude, loc.longitude, self._stations, n=20
                             )
                             if s.station_id in mosmix_ids
                         ][:3]
-                    elif self._stations:
-                        # Station catalog not parsed yet: warm the MOSMIX cache
-                        # with the nearest station, then re-check the parsed set.
-                        first = find_nearest_stations(
+                        if candidates:
+                            wanted_by_location[loc.loc_key] = candidates
+                elif self._stations:
+                    # Cache cold: warm it with the nearest stations of all
+                    # locations, then re-filter against the parsed index.
+                    warm: set[str] = set()
+                    for loc in location_specs:
+                        nearest = find_nearest_stations(
                             loc.latitude, loc.longitude, self._stations, n=1
                         )
-                        if first:
-                            await self._fetch_mosmix(first[0][0].station_id)
-                        mosmix_ids = get_mosmix_station_ids()
-                        if mosmix_ids:
+                        if nearest:
+                            warm.add(nearest[0][0].station_id)
+                    if warm:
+                        await fetch_mosmix_forecasts(self._session, warm)
+                    mosmix_ids = get_mosmix_station_ids()
+                    if mosmix_ids:
+                        for loc in location_specs:
                             candidates = [
-                                (s, d)
-                                for s, d in find_nearest_stations(
+                                s.station_id
+                                for s, _d in find_nearest_stations(
                                     loc.latitude, loc.longitude, self._stations, n=20
                                 )
                                 if s.station_id in mosmix_ids
                             ][:3]
-                        else:
-                            candidates = []
-                    else:
-                        candidates = []
-                    for station, _dist in candidates:
-                        try:
-                            forecast = await self._fetch_mosmix(station.station_id)
-                        except Exception:
-                            continue
+                            if candidates:
+                                wanted_by_location[loc.loc_key] = candidates
+
+                all_ids: set[str] = set()
+                for ids in wanted_by_location.values():
+                    all_ids.update(ids)
+                if not all_ids:
+                    return None
+                forecasts = await fetch_mosmix_forecasts(self._session, all_ids)
+
+                mosmix_result: dict[str, list[dict]] = {}
+                for loc_key, ids in wanted_by_location.items():
+                    for sid in ids:
+                        forecast = forecasts.get(sid)
                         if forecast:
-                            mosmix_result[loc.loc_key] = [
+                            mosmix_result[loc_key] = [
                                 fc for fc in forecast if fc.get("ts", 0) >= now_ts
                             ]
                             break

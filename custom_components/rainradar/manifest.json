@@ -1,13 +1,20 @@
 {
   "domain": "rainradar",
   "name": "Rainradar",
-  "codeowners": ["@rainradar"],
+  "codeowners": [
+    "@rainradar"
+  ],
   "config_flow": true,
-  "dependencies": ["http"],
+  "dependencies": [
+    "http"
+  ],
   "documentation": "https://github.com/jorim/rainradar",
-  "issue_tracker": "https://github.com/jorim/rainradar/issues",
   "integration_type": "hub",
   "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/jorim/rainradar/issues",
+  "loggers": [
+    "custom_components.rainradar"
+  ],
   "requirements": [
     "eccodes>=1.5.0",
     "cfgrib>=0.9.11",
@@ -15,6 +22,5 @@
     "google-auth>=2.0.0",
     "cdsapi>=0.7.0"
   ],
-  "version": "0.6.4",
-  "loggers": ["custom_components.rainradar"]
+  "version": "0.6.5"
 }

@@ -9,7 +9,7 @@ These are regression tests for the two worst historical bugs:
 from __future__ import annotations
 
 import logging
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
@@ -36,9 +36,6 @@ def _patch_network():
         return {"pressure": 1013.0}
 
     async def _fetch_om(session, lat, lon):
-        return None
-
-    async def _fetch_mosmix(session, station_id):
         return None
 
     async def _fetch_frames(self, frames):
@@ -68,8 +65,8 @@ def _patch_network():
             new=_fetch_om,
         ),
         "mosmix": patch(
-            "custom_components.rainradar.radar_coordinator.fetch_mosmix_forecast",
-            new=_fetch_mosmix,
+            "custom_components.rainradar.radar_coordinator.fetch_mosmix_forecasts",
+            new=AsyncMock(return_value={}),
         ),
         "mosmix_ids": patch(
             "custom_components.rainradar.radar_coordinator.get_mosmix_station_ids",

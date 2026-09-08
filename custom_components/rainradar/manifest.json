@@ -3,10 +3,10 @@
   "name": "Rainradar",
   "codeowners": ["@rainradar"],
   "config_flow": true,
+  "dependencies": ["http"],
   "documentation": "https://github.com/jorim/rainradar",
   "issue_tracker": "https://github.com/jorim/rainradar/issues",
   "integration_type": "hub",
-  "homeassistant": "2026.9.0",
   "iot_class": "cloud_polling",
   "requirements": [
     "eccodes>=1.5.0",
@@ -15,6 +15,6 @@
     "google-auth>=2.0.0",
     "cdsapi>=0.7.0"
   ],
-  "version": "0.6.3",
+  "version": "0.6.4",
   "loggers": ["custom_components.rainradar"]
 }

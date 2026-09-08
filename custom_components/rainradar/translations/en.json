@@ -18,7 +18,7 @@
         "sections": {
           "advanced": {
             "name": "Advanced / Experimental",
-            "description": "Optional high-resolution global sources. WeatherNext 3 requires a Google allowlist approval and a service account; CAMS UV requires a free ADS token (https://ads.atmosphere.copernicus.eu).",
+            "description": "Optional high-resolution global sources. WeatherNext 3 requires a Google allowlist approval and a service account; CAMS UV requires a free ADS account token (see the Rainradar README).",
             "data": {
               "enable_weathernext": "Enable WeatherNext 3 (global forecast, 64-member ensemble)",
               "wn_gcp_project_id": "GCP project ID (used for Requester-Pays-free statistics reads)",
@@ -28,7 +28,7 @@
               "enable_pkg_wind": "Wind package (100 m wind speed and direction)",
               "enable_pkg_probability": "Probability package (24 h rain / frost / heat risk)",
               "enable_cams_uv": "CAMS all-sky UV index (precise, global)",
-              "cams_api_token": "ADS API token (https://ads.atmosphere.copernicus.eu/how-to-api)",
+              "cams_api_token": "ADS API token (see README for how to create one)",
               "wn_credentials_status": "WeatherNext credentials status",
               "cams_credentials_status": "CAMS credentials status"
             }
@@ -72,7 +72,7 @@
         "sections": {
           "advanced": {
             "name": "Advanced / Experimental",
-            "description": "Optional high-resolution global sources. WeatherNext 3 requires a Google allowlist approval and a service account; CAMS UV requires a free ADS token (https://ads.atmosphere.copernicus.eu).",
+            "description": "Optional high-resolution global sources. WeatherNext 3 requires a Google allowlist approval and a service account; CAMS UV requires a free ADS account token (see the Rainradar README).",
             "data": {
               "enable_weathernext": "Enable WeatherNext 3 (global forecast, 64-member ensemble)",
               "wn_gcp_project_id": "GCP project ID (used for Requester-Pays-free statistics reads)",
@@ -82,7 +82,7 @@
               "enable_pkg_wind": "Wind package (100 m wind speed and direction)",
               "enable_pkg_probability": "Probability package (24 h rain / frost / heat risk)",
               "enable_cams_uv": "CAMS all-sky UV index (precise, global)",
-              "cams_api_token": "ADS API token (https://ads.atmosphere.copernicus.eu/how-to-api)",
+              "cams_api_token": "ADS API token (see README for how to create one)",
               "wn_credentials_status": "WeatherNext credentials status",
               "cams_credentials_status": "CAMS credentials status"
             }

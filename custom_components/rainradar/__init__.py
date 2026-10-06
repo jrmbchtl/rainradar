@@ -77,12 +77,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     weathernext_coordinator = None
     cams_coordinator = None
-    if entry.options.get(CONF_ENABLE_WEATHERNEXT) and creds.get(
-        "wn_service_account_info"
-    ):
-        from .weathernext_coordinator import WeatherNextCoordinator
+    if entry.options.get(CONF_ENABLE_WEATHERNEXT):
+        from . import wnauth
 
-        weathernext_coordinator = WeatherNextCoordinator(hass, entry, creds)
+        if wnauth.has_credentials(creds):
+            from .weathernext_coordinator import WeatherNextCoordinator
+
+            weathernext_coordinator = WeatherNextCoordinator(hass, entry, creds)
+        else:
+            _LOGGER.warning(
+                "WeatherNext 3 is enabled for %s but no Google account is "
+                "signed in; open the integration options and use "
+                "'Sign in with Google'",
+                entry.entry_id,
+            )
     if entry.options.get(CONF_ENABLE_CAMS_UV) and creds.get("cams_api_token"):
         from .cams_coordinator import CamsCoordinator
 
@@ -161,7 +169,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     NOTE: HA resolves this hook on the integration component (__init__.py),
     NOT on the config flow class.
     """
-    if entry.version > 3:
+    if entry.version > 4:
         # Downgrade from a future version: not supported.
         return False
 
@@ -198,6 +206,18 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         options.setdefault(CONF_ENABLE_CAMS_UV, False)
         options.setdefault(CONF_WN_GCP_PROJECT_ID, "")
         hass.config_entries.async_update_entry(entry, options=options, version=3)
+
+    if entry.version < 4:
+        # v3 -> v4: WeatherNext 3 moved from a pasted service-account JSON key
+        # to a Google OAuth2 sign-in. Any stored key can no longer be used (and
+        # could not fetch data anyway), so drop it and turn WN3 back off so the
+        # entry lands in "needs sign-in" rather than failing silently forever.
+        from .credentials import async_remove_credentials
+
+        await async_remove_credentials(hass, entry.entry_id)
+        options = {**entry.options}
+        options[CONF_ENABLE_WEATHERNEXT] = False
+        hass.config_entries.async_update_entry(entry, options=options, version=4)
 
     _LOGGER.info("Config entry %s migrated to version %s", entry.entry_id, entry.version)
     return True

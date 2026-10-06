@@ -2,7 +2,9 @@
 
 Rainradar is a [Home Assistant](https://www.home-assistant.io/) integration that brings the **Deutscher Wetterdienst (DWD)** rain radar and station data directly into your dashboard. It combines a Python backend with an embedded LitElement + Leaflet frontend card.
 
-No API keys required — all data comes from free DWD sources.
+No API keys required — all data comes from free DWD sources. The optional
+WeatherNext 3 and CAMS UV sources need their own accounts; see
+[WeatherNext 3](#weathernext-3-optional-experimental).
 
 ## Features
 
@@ -48,6 +50,89 @@ The radar composite is Germany-only, but the integration asks the WMS for a bbox
 3. Pick one or more **zones** to track (defaults to `zone.home` if it exists)
 4. Optionally pick one or more **device trackers** for dynamic per-location data
 5. Adjust the scan interval (default: 600 seconds, range 60–3600)
+
+## WeatherNext 3 (optional, experimental)
+
+WeatherNext 3 is Google's global ensemble forecast model. It is off by default
+because it needs a Google account that has been granted data access.
+
+### 1. Request access
+
+Submit the [WeatherNext Data Request form](https://developers.google.com/weathernext/guides/access-forecast)
+with the **email address of the Google account you will sign in with** (your
+`@gmail.com` or Workspace address). Approval typically takes 5–7 business days.
+Access covers Cloud Storage, BigQuery and Earth Engine at once.
+
+### 2. Create a Google OAuth client
+
+Rainradar does not ship an OAuth client — you create your own, so no third party
+holds a credential on your behalf.
+
+1. Open the [Google Cloud console](https://console.cloud.google.com/) and create
+   or select a project.
+2. Make sure the project is selected in the console toolbar.
+3. Open the [Auth Branding page](https://console.cloud.google.com/auth/branding).
+   If it is unconfigured, click **Get started**:
+   - **App Information** → app name (e.g. `Home Assistant`), support email = yours
+   - **Audience** → **External**
+   - **Contact Information** → your email
+   - Accept the Google API Services User Data Policy and click **Continue** and **Create**
+4. Still under **Branding**, set:
+   - **Application home page**, **privacy policy link** and **terms of service link**
+     → `https://home-assistant.io`
+   - **Authorized domains** → add `home-assistant.io`
+5. Under **Audience**, either:
+   - **Publish app** (recommended — no expiry, usable by anyone), or
+   - leave it in **Testing** and add your own Google account under **Test users**
+     (testing-mode credentials expire every 7 days)
+6. Under **Clients** → **Create client**:
+   - **Application type**: **Web application**
+   - Name it, e.g. `Home Assistant Client`
+   - **Authorized redirect URIs** → add
+     `https://YOUR-HA-URL/auth/external/callback`
+     (e.g. `https://home.example.com/auth/external/callback`) and click **Create**
+
+   > Use the URL you actually open Home Assistant with, including the port if
+   > non-standard. The redirect URI must match exactly.
+
+7. Copy the **Client ID** and **Client secret** — the secret cannot be retrieved
+   again after you close the dialog.
+
+> Google may take up to a few minutes (occasionally up to five hours) before a new
+> client becomes usable. The consent screen will warn that the app is unverified;
+> click **Advanced** → **Go to Home Assistant (unsafe)** to continue. Only do this
+> for a client you created yourself.
+
+### 3. Add the credentials to Home Assistant
+
+**Settings → Devices & Services → Application Credentials → Add**
+- Domain: **Rainradar**
+- Client ID / Client secret: the values from step 2
+
+### 4. Sign in
+
+Open the Rainradar integration's **Configure** dialog, expand
+**Advanced / Experimental**, tick **Enable WeatherNext 3** and **Sign in with
+Google**, then submit. Home Assistant opens Google's consent screen in a new
+window ("Open website"). Approve the read-only Cloud Storage permission; the
+window closes itself and the dialog returns.
+
+The "WeatherNext account" field then shows the signed-in address. To switch
+accounts or re-authorize, repeat step 4 from the options dialog.
+
+### 5. Optional Python packages
+
+Bulk Zarr reads need `zarr` and `obstore`. They are deliberately **not** manifest
+requirements: `numcodecs` (a `zarr` dependency) ships no cp314 musllinux wheel, so
+a hard requirement breaks `pip install` on Alpine-based installs. Install them
+manually:
+
+```sh
+pip install "zarr>=3.0.0" "obstore>=0.6.0"
+```
+
+Without them every other Rainradar feature still works; WeatherNext 3 logs one
+warning and stays dormant.
 
 ## Dashboard card
 

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import json
+import asyncio
+import logging
 from typing import Any
 
+import aiohttp
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
-from homeassistant.helpers import aiohttp_client, selector
+from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow, selector
 import voluptuous as vol
 
 from .const import (
@@ -51,19 +53,46 @@ WN_TOGGLE_KEYS = (
 )
 
 # Secrets live in the credentials store, never in entry options.
-SECRET_KEYS = ("wn_service_account_json", "cams_api_token")
+SECRET_KEYS = ("cams_api_token",)
+
+CONF_WN_SIGN_IN = "wn_sign_in_google"
+
+_LOGGER = logging.getLogger(__name__)
+
+
+async def _fetch_account_email(
+    session: aiohttp.ClientSession, token: dict[str, Any]
+) -> str | None:
+    """Look up the signed-in Google account address, for the status field.
+
+    Purely cosmetic: a failure here must never block the sign-in.
+    """
+    access_token = token.get("access_token")
+    if not access_token:
+        return None
+    try:
+        async with asyncio.timeout(15):
+            async with session.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json(content_type=None)
+    except (TimeoutError, aiohttp.ClientError, ValueError):
+        return None
+    email = data.get("email")
+    return email if isinstance(email, str) else None
 
 
 def _advanced_schema(
     wn_toggles: dict[str, bool],
-    wn_project_id: str,
     has_wn_credentials: bool,
+    wn_status: str,
     enable_cams_uv: bool,
     has_cams_token: bool,
 ) -> vol.Schema:
     """Schema for the collapsed Advanced/Experimental section."""
-    del wn_project_id  # kept for signature compatibility with defaults below
-    wn_note = "configured" if has_wn_credentials else "not_configured"
     cams_note = "configured" if has_cams_token else "not_configured"
     return vol.Schema(
         {
@@ -71,15 +100,7 @@ def _advanced_schema(
                 CONF_ENABLE_WEATHERNEXT,
                 default=wn_toggles.get(CONF_ENABLE_WEATHERNEXT, False),
             ): selector.BooleanSelector(),
-            vol.Required(
-                CONF_WN_GCP_PROJECT_ID,
-                default=wn_toggles.get(CONF_WN_GCP_PROJECT_ID, ""),
-            ): selector.TextSelector(
-                selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
-            ),
-            vol.Optional("wn_service_account_json"): selector.TextSelector(
-                selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
-            ),
+            vol.Optional(CONF_WN_SIGN_IN, default=False): selector.BooleanSelector(),
             vol.Required(
                 CONF_ENABLE_WN_OVERLAY,
                 default=wn_toggles.get(CONF_ENABLE_WN_OVERLAY, True),
@@ -101,11 +122,19 @@ def _advanced_schema(
                 selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
             ),
             vol.Optional(
-                "wn_credentials_status", default=wn_note
-            ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)),
+                "wn_credentials_status", default=wn_status
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.TEXT, read_only=True
+                )
+            ),
             vol.Optional(
                 "cams_credentials_status", default=cams_note
-            ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)),
+            ): selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.TEXT, read_only=True
+                )
+            ),
         }
     )
 
@@ -185,10 +214,18 @@ def _result_options(user_input: dict[str, Any], current_locations: list) -> dict
 
 
 def _wn_defaults(options: dict[str, Any]) -> dict[str, Any]:
-    return {key: bool(options.get(key, False)) for key in WN_TOGGLE_KEYS} | {
-        CONF_ENABLE_WN_OVERLAY: bool(options.get(CONF_ENABLE_WN_OVERLAY, True)),
-        CONF_WN_GCP_PROJECT_ID: options.get(CONF_WN_GCP_PROJECT_ID, ""),
+    """Carry the WeatherNext toggles into the entry options.
+
+    ``wn_gcp_project_id`` is preserved for entries written by older versions so
+    they round-trip unchanged, but it is no longer offered in the form: it only
+    ever mattered for Requester-Pays buckets, which we deliberately never read.
+    """
+    defaults = {key: bool(options.get(key, False)) for key in WN_TOGGLE_KEYS} | {
+        CONF_ENABLE_WN_OVERLAY: bool(options.get(CONF_ENABLE_WN_OVERLAY, True))
     }
+    if CONF_WN_GCP_PROJECT_ID in options:
+        defaults[CONF_WN_GCP_PROJECT_ID] = options[CONF_WN_GCP_PROJECT_ID]
+    return defaults
 
 
 class _SecretsPreflightMixin:
@@ -196,51 +233,38 @@ class _SecretsPreflightMixin:
 
     hass: Any
 
-    async def _handle_secrets_and_preflight(
-        self, advanced: dict[str, Any], options: dict[str, Any]
-    ) -> dict[str, str]:
-        """Store secrets, run preflights; return flow errors keyed by field.
+    def _credential_key(self) -> str:
+        """Return the credentials-store key for this flow.
 
         During the user flow there is no entry yet, so credentials are keyed
         under the flow id and re-keyed to the entry id by
         ``async_copy_flow_credentials`` (called from ``__init__.py`` setup).
+        A reauth flow already knows its entry, so it writes straight there.
         """
-        from . import cams as cams_mod, weathernext as wn
+        entry_key = getattr(self, "config_entry", None)
+        if entry_key is not None and getattr(entry_key, "entry_id", None):
+            return entry_key.entry_id
+        if entry_id := (self.context or {}).get("entry_id"):
+            return entry_id
+        return self.flow_id
+
+    async def _handle_secrets_and_preflight(
+        self, advanced: dict[str, Any], options: dict[str, Any]
+    ) -> dict[str, str]:
+        """Store secrets, run preflights; return flow errors keyed by field."""
+        from . import cams as cams_mod, weathernext as wn, wnauth
 
         errors: dict[str, str] = {}
-        entry_key = getattr(self, "config_entry", None)
-        entry_id = (
-            entry_key.entry_id
-            if entry_key is not None and getattr(entry_key, "entry_id", None)
-            else self.flow_id
-        )
+        entry_id = self._credential_key()
         creds = await async_get_credentials(self.hass, entry_id)
 
-        sa_json = advanced.get("wn_service_account_json")
-        if sa_json:
-            try:
-                parsed = json.loads(sa_json)
-                if not isinstance(parsed, dict) or "client_email" not in parsed:
-                    errors["wn_service_account_json"] = "invalid_service_account_json"
-                else:
-                    creds["wn_service_account_info"] = parsed
-                    creds["wn_gcp_project_id"] = advanced.get(
-                        CONF_WN_GCP_PROJECT_ID, ""
-                    )
-            except (ValueError, TypeError):
-                errors["wn_service_account_json"] = "invalid_service_account_json"
-        elif options.get(CONF_ENABLE_WEATHERNEXT) and not creds.get(
-            "wn_service_account_info"
-        ):
-            errors["wn_service_account_json"] = "service_account_required"
-
-        if options.get(CONF_ENABLE_WEATHERNEXT) and (
-            "wn_service_account_json" not in errors
-        ):
+        if options.get(CONF_ENABLE_WEATHERNEXT) and not wnauth.has_credentials(creds):
+            errors[CONF_WN_SIGN_IN] = "sign_in_required"
+        elif options.get(CONF_ENABLE_WEATHERNEXT):
             session = aiohttp_client.async_get_clientsession(self.hass)
-            error = await wn.preflight(session, creds.get("wn_service_account_info", {}))
+            error = await wn.preflight(session, creds)
             if error:
-                errors["wn_service_account_json"] = error
+                errors[CONF_WN_SIGN_IN] = error
 
         cams_token = advanced.get("cams_api_token")
         if cams_token:
@@ -265,7 +289,7 @@ class RainradarConfigFlow(
 ):
     """Handle the rainradar config flow."""
 
-    VERSION = 3
+    VERSION = 4
 
     def _get_default_zones(self) -> list[str]:
         if self.hass.states.get("zone.home") is not None:
@@ -273,11 +297,23 @@ class RainradarConfigFlow(
         return []
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
+        from . import wnauth
+
         if user_input is not None:
             advanced = _extract_advanced(user_input)
             options = _result_options(user_input, current_locations=[])
             options.update(_wn_defaults(advanced))
-            options[CONF_ENABLE_CAMS_UV] = bool(advanced.get(CONF_ENABLE_CAMS_UV, False))
+            options[CONF_ENABLE_CAMS_UV] = bool(
+                advanced.get(CONF_ENABLE_CAMS_UV, False)
+            )
+
+            # "Sign in with Google" is checked and we have no credential yet:
+            # stash the form input and hand over to the OAuth external step.
+            creds = await async_get_credentials(self.hass, self._credential_key())
+            if advanced.get(CONF_WN_SIGN_IN) and not wnauth.has_credentials(creds):
+                self._pending_user_input = user_input
+                return await self.async_step_auth()
+
             errors = await self._handle_secrets_and_preflight(advanced, options)
             if errors:
                 return self.async_show_form(
@@ -293,16 +329,17 @@ class RainradarConfigFlow(
                         toggles=options,
                         advanced_schema=_advanced_schema(
                             options,
-                            "",
-                            False,
+                            wnauth.has_credentials(creds),
+                            wnauth.describe(creds),
                             options[CONF_ENABLE_CAMS_UV],
-                            False,
+                            bool(creds.get("cams_api_token")),
                         ),
                     ),
                     errors=errors,
                 )
             return self.async_create_entry(title="Rainradar", data={}, options=options)
 
+        creds = await async_get_credentials(self.hass, self._credential_key())
         return self.async_show_form(
             step_id="user",
             data_schema=_build_schema(
@@ -310,9 +347,111 @@ class RainradarConfigFlow(
                 device_trackers=[],
                 scan_interval=DEFAULT_SCAN_INTERVAL,
                 toggles={},
-                advanced_schema=_advanced_schema({}, "", False, False, False),
+                advanced_schema=_advanced_schema(
+                    {},
+                    wnauth.has_credentials(creds),
+                    wnauth.describe(creds),
+                    False,
+                    bool(creds.get("cams_api_token")),
+                ),
             ),
         )
+
+    async def async_step_auth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Run Google's consent screen, then return to the form."""
+
+        if user_input is not None:
+            # Resumed by /auth/external/callback.
+            if "error" in user_input:
+                return self.async_abort(reason="authorize_rejected")
+            self.external_data = user_input
+            return self.async_external_step_done(next_step_id="creation")
+
+        try:
+            implementations = await config_entry_oauth2_flow.async_get_implementations(
+                self.hass, DOMAIN
+            )
+        except config_entry_oauth2_flow.ImplementationUnavailableError:
+            return self.async_abort(reason="missing_google_credentials")
+
+        if not implementations:
+            return self.async_abort(reason="missing_google_credentials")
+
+        impl = next(iter(implementations.values()))
+        try:
+            url = await impl.async_generate_authorize_url(self.flow_id)
+        except Exception:
+            _LOGGER.exception("Failed to build the Google authorize URL")
+            return self.async_abort(reason="authorize_url_failed")
+
+        self._flow_impl = impl
+        return self.async_external_step(step_id="auth", url=url)
+
+    async def async_step_creation(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Exchange the auth code for tokens and store them privately."""
+
+        impl = getattr(self, "_flow_impl", None)
+        if impl is None:
+            return self.async_abort(reason="authorize_url_failed")
+
+        try:
+            token = await impl.async_resolve_external_data(self.external_data)
+        except Exception as exc:
+            _LOGGER.warning("WeatherNext OAuth token exchange failed: %s", exc)
+            return self.async_abort(reason="token_exchange_failed")
+
+        refresh_token = token.get("refresh_token")
+        if not refresh_token:
+            # Google only issues a refresh token on the first consent; ask again
+            # rather than storing a credential that dies in an hour.
+            return self.async_abort(reason="no_refresh_token")
+
+        client_id = getattr(impl, "client_id", "")
+        account = await _fetch_account_email(
+            aiohttp_client.async_get_clientsession(self.hass), token
+        )
+
+        creds = await async_get_credentials(self.hass, self._credential_key())
+        creds["wn_google_token"] = {
+            "refresh_token": refresh_token,
+            "access_token": token.get("access_token"),
+            "client_id": client_id,
+            "client_secret": getattr(impl, "client_secret", ""),
+            "token_uri": getattr(impl, "token_url", ""),
+            "scope": token.get("scope", ""),
+        }
+        if account:
+            creds["wn_account_email"] = account
+        # A legacy service-account key would otherwise keep taking precedence.
+        creds.pop("wn_service_account_info", None)
+        await async_save_credentials(self.hass, self._credential_key(), creds)
+
+        _LOGGER.info("Rainradar: WeatherNext 3 signed in as %s", account or "unknown")
+
+        # A reauth flow has an entry already; finish it so the entry reloads.
+        if entry_data := (self.context or {}).get("entry_data"):
+            return self.async_create_entry(title="", data=dict(entry_data))
+
+        # Otherwise the user already submitted their settings before signing in,
+        # so replay that submission. The sign-in flag is now a no-op because a
+        # credential exists, which keeps this from looping back into OAuth.
+        pending = getattr(self, "_pending_user_input", None) or {}
+        pending.setdefault(CONF_ZONES, self._get_default_zones())
+        pending.setdefault(CONF_DEVICE_TRACKERS, [])
+        pending.setdefault(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+        for key in ENABLE_TOGGLE_KEYS:
+            pending.setdefault(key, True)
+        return await self.async_step_user(pending)
+
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Re-run the Google sign-in for an existing entry."""
+        return await self.async_step_auth()
 
     @staticmethod
     @callback
@@ -330,6 +469,8 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
     """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
+        from . import wnauth
+
         entry = self.config_entry
         current_locations = entry.options.get(CONF_LOCATIONS, [])
 
@@ -349,6 +490,14 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
             options = _result_options(user_input, current_locations=current_locations)
             options.update(_wn_defaults(advanced))
             options[CONF_ENABLE_CAMS_UV] = bool(advanced.get(CONF_ENABLE_CAMS_UV, False))
+
+            # HA's /auth/external/callback only resumes the *config* flow
+            # manager, so an external step started from here would never come
+            # back. Delegate the sign-in to a reauth flow instead.
+            if advanced.get(CONF_WN_SIGN_IN):
+                entry.async_start_reauth(self.hass)
+                return self.async_abort(reason="reauth_started")
+
             errors = await self._handle_secrets_and_preflight(advanced, options)
             if errors:
                 creds = await async_get_credentials(self.hass, entry.entry_id)
@@ -365,8 +514,8 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
                         toggles=options,
                         advanced_schema=_advanced_schema(
                             options,
-                            "",
-                            bool(creds.get("wn_service_account_info")),
+                            wnauth.has_credentials(creds),
+                            wnauth.describe(creds),
                             options[CONF_ENABLE_CAMS_UV],
                             bool(creds.get("cams_api_token")),
                         ),
@@ -385,8 +534,8 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
                 toggles=toggles,
                 advanced_schema=_advanced_schema(
                     _wn_defaults(entry.options),
-                    "",
-                    bool(creds.get("wn_service_account_info")),
+                    wnauth.has_credentials(creds),
+                    wnauth.describe(creds),
                     entry.options.get(CONF_ENABLE_CAMS_UV, False),
                     bool(creds.get("cams_api_token")),
                 ),

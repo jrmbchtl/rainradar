@@ -167,7 +167,7 @@ async def test_wn_package_sensors_created_when_enabled(hass: HomeAssistant) -> N
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Rainradar",
-        version=3,
+        version=4,
         data={},
         options={
             "locations": [],
@@ -185,7 +185,6 @@ async def test_wn_package_sensors_created_when_enabled(hass: HomeAssistant) -> N
             "enable_pkg_wind": True,
             "enable_pkg_probability": True,
             "enable_cams_uv": False,
-            "wn_gcp_project_id": "proj",
         },
     )
     entry.add_to_hass(hass)
@@ -198,13 +197,13 @@ async def test_wn_package_sensors_created_when_enabled(hass: HomeAssistant) -> N
         hass,
         entry.entry_id,
         {
-            "wn_service_account_info": {
-                "type": "service_account",
-                "client_email": "sa@test.iam.googleapis.com",
-                "private_key": "x",
+            "wn_google_token": {
+                "refresh_token": "refresh",
+                "client_id": "cid",
+                "client_secret": "secret",
                 "token_uri": "https://oauth2.googleapis.com/token",
             },
-            "wn_gcp_project_id": "proj",
+            "wn_account_email": "user@example.com",
         },
     )
 
@@ -280,7 +279,7 @@ async def test_cams_uv_sensors_created_when_enabled(hass: HomeAssistant) -> None
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Rainradar",
-        version=3,
+        version=4,
         data={},
         options={
             "locations": [],

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant import config_entries
 from homeassistant.core import HomeAssistant
@@ -112,6 +112,224 @@ async def test_scan_interval_bounds_enforced(hass: HomeAssistant) -> None:
     assert schema({CONF_ZONES: [], CONF_DEVICE_TRACKERS: [], CONF_SCAN_INTERVAL: DEFAULT_SCAN_INTERVAL})
 
 
+async def test_sign_in_goes_to_external_step(hass: HomeAssistant) -> None:
+    """Checking 'Sign in with Google' opens Google's consent screen."""
+    from custom_components.rainradar import config_flow as cf
+
+    impl = MagicMock()
+    # Build a real authorize URL so the scope/params assertions are meaningful.
+    impl.async_generate_authorize_url = AsyncMock(
+        return_value=(
+            "https://accounts.google.com/o/oauth2/v2/auth"
+            "?scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdevstorage.read_only"
+            "&access_type=offline&prompt=consent"
+        )
+    )
+    hass.states.async_set("zone.home", "zoning", {"latitude": 52.4, "longitude": 9.7})
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    with patch.object(
+        cf.config_entry_oauth2_flow,
+        "async_get_implementations",
+        AsyncMock(return_value={"google": impl}),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_ZONES: ["zone.home"],
+                CONF_DEVICE_TRACKERS: [],
+                CONF_SCAN_INTERVAL: 600,
+                "enable_forecast": True,
+                "enable_icon_eu": True,
+                "enable_uv": True,
+                "enable_warnings": True,
+                "enable_air_quality": True,
+                "advanced": {
+                    "enable_weathernext": True,
+                    "wn_sign_in_google": True,
+                    "enable_wn_overlay": True,
+                    "enable_pkg_solar": False,
+                    "enable_pkg_wind": False,
+                    "enable_pkg_probability": False,
+                    "enable_cams_uv": False,
+                },
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.EXTERNAL_STEP
+    assert result["step_id"] == "auth"
+    url = result["url"]
+    assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth")
+    # Must request offline access, otherwise no refresh token is issued.
+    assert "access_type=offline" in url
+    assert "prompt=consent" in url
+    assert "devstorage.read_only" in url
+
+
+def test_google_oauth_impl_requests_offline_access(hass) -> None:
+    """The sign-in implementation asks for offline access + the read-only scope.
+
+    Without access_type=offline Google issues no refresh token and the stored
+    credential would expire after an hour.
+    """
+    from homeassistant.components.application_credentials import (
+        AuthorizationServer,
+        ClientCredential,
+    )
+
+    from custom_components.rainradar.application_credentials import (
+        WeatherNextGoogleOAuthImplementation,
+    )
+
+    impl = WeatherNextGoogleOAuthImplementation(
+        hass,
+        "google",
+        ClientCredential(client_id="cid", client_secret="csec"),
+        AuthorizationServer(
+            "https://accounts.google.com/o/oauth2/v2/auth",
+            "https://oauth2.googleapis.com/token",
+        ),
+    )
+    data = impl.extra_authorize_data
+    assert data["access_type"] == "offline"
+    assert data["prompt"] == "consent"
+    assert data["scope"] == "https://www.googleapis.com/auth/devstorage.read_only"
+    assert impl.name == "Google (WeatherNext 3)"
+
+
+async def test_sign_in_callback_stores_token_and_returns_to_form(
+    hass: HomeAssistant,
+) -> None:
+    """The OAuth callback stores the token privately, then re-shows the form."""
+    from custom_components.rainradar import config_flow as cf
+    from custom_components.rainradar.credentials import async_get_credentials
+
+    impl = MagicMock()
+    impl.async_generate_authorize_url = AsyncMock(return_value="https://accounts.google.com/x")
+    impl.async_resolve_external_data = AsyncMock(
+        return_value={
+            "access_token": "at",
+            "refresh_token": "rt",
+            "scope": "s",
+        }
+    )
+    impl.client_id = "cid"
+    impl.client_secret = "csec"
+    impl.token_url = "https://oauth2.googleapis.com/token"
+
+    hass.states.async_set("zone.home", "zoning", {"latitude": 52.4, "longitude": 9.7})
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    flow_id = result["flow_id"]
+
+    with (
+        patch.object(
+            cf.config_entry_oauth2_flow,
+            "async_get_implementations",
+            AsyncMock(return_value={"google": impl}),
+        ),
+        patch.object(
+            cf, "_fetch_account_email", AsyncMock(return_value="user@example.com")
+        ),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            flow_id,
+            {
+                CONF_ZONES: ["zone.home"],
+                CONF_DEVICE_TRACKERS: [],
+                CONF_SCAN_INTERVAL: 600,
+                "enable_forecast": True,
+                "enable_icon_eu": True,
+                "enable_uv": True,
+                "enable_warnings": True,
+                "enable_air_quality": True,
+                "advanced": {
+                    "enable_weathernext": True,
+                    "wn_sign_in_google": True,
+                    "enable_wn_overlay": True,
+                    "enable_pkg_solar": False,
+                    "enable_pkg_wind": False,
+                    "enable_pkg_probability": False,
+                    "enable_cams_uv": False,
+                },
+            },
+        )
+        await hass.async_block_till_done()
+        assert result["type"] == FlowResultType.EXTERNAL_STEP
+
+        # Simulate /auth/external/callback handing back the code + state.
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"code": "auth-code", "state": {"flow_id": flow_id}}
+        )
+        await hass.async_block_till_done()
+        assert result["type"] == FlowResultType.EXTERNAL_STEP_DONE
+
+        # The frontend then GETs the flow, which advances the step. The
+        # resumed form runs a WN3 preflight, so stub the network probe out.
+        with patch(
+            "custom_components.rainradar.weathernext.preflight",
+            AsyncMock(return_value=None),
+        ):
+            result = await hass.config_entries.flow.async_configure(flow_id)
+            await hass.async_block_till_done()
+
+    # The settings submitted before sign-in are replayed, so setup completes.
+    assert result["type"] == FlowResultType.CREATE_ENTRY
+    assert result["options"]["enable_weathernext"] is True
+
+    # Credentials are keyed by flow id until the entry is set up, which re-keys
+    # them to the entry id (async_copy_flow_credentials).
+    entry_id = result["result"].entry_id
+    await hass.async_block_till_done()
+    creds = (
+        await async_get_credentials(hass, entry_id)
+        or await async_get_credentials(hass, flow_id)
+    )
+    assert creds["wn_google_token"]["refresh_token"] == "rt"
+    assert creds["wn_account_email"] == "user@example.com"
+    # A stale service account must not keep taking precedence.
+    assert "wn_service_account_info" not in creds
+
+
+async def test_sign_in_without_application_credentials_aborts(
+    hass: HomeAssistant,
+) -> None:
+    """No OAuth client configured → a clear abort, not a crash."""
+    hass.states.async_set("zone.home", "zoning", {"latitude": 52.4, "longitude": 9.7})
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {
+            CONF_ZONES: ["zone.home"],
+            CONF_DEVICE_TRACKERS: [],
+            CONF_SCAN_INTERVAL: 600,
+            "enable_forecast": True,
+            "enable_icon_eu": True,
+            "enable_uv": True,
+            "enable_warnings": True,
+            "enable_air_quality": True,
+            "advanced": {
+                "enable_weathernext": True,
+                "wn_sign_in_google": True,
+                "enable_wn_overlay": True,
+                "enable_pkg_solar": False,
+                "enable_pkg_wind": False,
+                "enable_pkg_probability": False,
+                "enable_cams_uv": False,
+            },
+        },
+    )
+    await hass.async_block_till_done()
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "missing_google_credentials"
+
+
 async def test_user_flow_includes_advanced_section(hass: HomeAssistant) -> None:
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -121,8 +339,8 @@ async def test_user_flow_includes_advanced_section(hass: HomeAssistant) -> None:
     assert any("advanced" in k for k in schema_keys)
 
 
-async def test_user_flow_wn_enabled_requires_service_account(hass: HomeAssistant) -> None:
-    """Enabling WeatherNext without credentials → form error, no entry."""
+async def test_user_flow_wn_enabled_requires_sign_in(hass: HomeAssistant) -> None:
+    """Enabling WeatherNext without a Google account → form error, no entry."""
     hass.states.async_set("zone.home", "zoning", {"latitude": 52.4, "longitude": 9.7})
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -140,7 +358,7 @@ async def test_user_flow_wn_enabled_requires_service_account(hass: HomeAssistant
             "enable_air_quality": True,
             "advanced": {
                 "enable_weathernext": True,
-                "wn_gcp_project_id": "my-project",
+                "wn_sign_in_google": False,
                 "enable_wn_overlay": True,
                 "enable_pkg_solar": False,
                 "enable_pkg_wind": False,
@@ -151,7 +369,7 @@ async def test_user_flow_wn_enabled_requires_service_account(hass: HomeAssistant
     )
     await hass.async_block_till_done()
     assert result["type"] == FlowResultType.FORM
-    assert result["errors"] == {"wn_service_account_json": "service_account_required"}
+    assert result["errors"] == {"wn_sign_in_google": "sign_in_required"}
 
 
 async def test_user_flow_cams_requires_token(hass: HomeAssistant) -> None:
@@ -172,7 +390,6 @@ async def test_user_flow_cams_requires_token(hass: HomeAssistant) -> None:
             "enable_air_quality": True,
             "advanced": {
                 "enable_weathernext": False,
-                "wn_gcp_project_id": "",
                 "enable_wn_overlay": True,
                 "enable_pkg_solar": False,
                 "enable_pkg_wind": False,
@@ -207,7 +424,6 @@ async def test_user_flow_basic_submit_creates_entry_with_v3_defaults(
             "enable_air_quality": True,
             "advanced": {
                 "enable_weathernext": False,
-                "wn_gcp_project_id": "",
                 "enable_wn_overlay": True,
                 "enable_pkg_solar": False,
                 "enable_pkg_wind": False,

@@ -18,36 +18,49 @@
         "sections": {
           "advanced": {
             "name": "Advanced / Experimental",
-            "description": "Optional high-resolution global sources. WeatherNext 3 requires a Google allowlist approval and a service account; CAMS UV requires a free ADS account token (see the Rainradar README).",
+            "description": "Optional high-resolution global sources. WeatherNext 3 requires a Google account with WeatherNext data access; CAMS UV requires a free ADS account token (see the Rainradar README).",
             "data": {
               "enable_weathernext": "Enable WeatherNext 3 (global forecast, 64-member ensemble)",
-              "wn_gcp_project_id": "GCP project ID (used for Requester-Pays-free statistics reads)",
-              "wn_service_account_json": "Service-account JSON (paste the full key file content)",
+              "wn_sign_in_google": "Sign in with Google",
               "enable_wn_overlay": "WeatherNext global precipitation overlay (48h @ 1h)",
               "enable_pkg_solar": "Solar package (irradiance, direct beam, cloud layers)",
               "enable_pkg_wind": "Wind package (100 m wind speed and direction)",
               "enable_pkg_probability": "Probability package (24 h rain / frost / heat risk)",
               "enable_cams_uv": "CAMS all-sky UV index (precise, global)",
               "cams_api_token": "ADS API token (see README for how to create one)",
-              "wn_credentials_status": "WeatherNext credentials status",
+              "wn_credentials_status": "WeatherNext account",
               "cams_credentials_status": "CAMS credentials status"
             },
             "data_description": {
-              "wn_service_account_json": "Stored outside config entry options; leave empty to keep the currently stored key.",
+              "wn_sign_in_google": "Check this to sign in with the Google account that has WeatherNext data access. Opens a Google consent screen in a new window.",
               "cams_api_token": "Format 'user@host:key'. Leave empty to keep the currently stored token."
             }
           }
         }
+      },
+      "auth": {
+        "title": "Sign in with Google"
+      },
+      "creation": {
+        "title": "Finishing sign-in"
       }
     },
+    "auth": {
+      "description": "Choose the Google account that has been granted WeatherNext data access (see the Rainradar README) and approve the read-only Cloud Storage permission.\n\nThis window closes automatically when you are done. If it does not, check that your browser allows pop-ups for Home Assistant."
+    },
     "abort": {
-      "single_instance_allowed": "Only one Rainradar configuration is allowed."
+      "single_instance_allowed": "Only one Rainradar configuration is allowed.",
+      "reauth_started": "A Google sign-in window was opened. Complete it there, then reopen the Rainradar options.",
+      "authorize_rejected": "Google sign-in was declined or cancelled.",
+      "missing_google_credentials": "No Google OAuth client is configured. Add one under Settings > Devices & Services > Application Credentials first (see the Rainradar README).",
+      "authorize_url_failed": "Could not build the Google sign-in URL. Check the application credentials and reload.",
+      "token_exchange_failed": "Google rejected the sign-in. Check the OAuth client and its authorized redirect URI, then try again.",
+      "no_refresh_token": "Google did not return a refresh token. Revoke the app's access in your Google account settings, then sign in again."
     },
     "error": {
-      "invalid_service_account_json": "Not a valid Google service-account JSON (missing client_email).",
-      "service_account_required": "WeatherNext requires a service-account JSON key.",
+      "sign_in_required": "Enable WeatherNext 3 and check 'Sign in with Google' to connect your Google account.",
+      "invalid_credentials": "Google rejected the stored credentials. Sign in with Google again.",
       "allowlist_pending": "WeatherNext access not granted yet — submit the Google data request form and wait for approval (5-7 days).",
-      "invalid_service_account": "Google rejected the service account (bad key or no storage scope).",
       "http_500": "Google Cloud Storage returned a server error; try again later.",
       "no_data_found": "No WeatherNext data found for the last 8 hours.",
       "cams_token_required": "CAMS UV requires an ADS API token.",
@@ -72,27 +85,29 @@
         "sections": {
           "advanced": {
             "name": "Advanced / Experimental",
-            "description": "Optional high-resolution global sources. WeatherNext 3 requires a Google allowlist approval and a service account; CAMS UV requires a free ADS account token (see the Rainradar README).",
+            "description": "Optional high-resolution global sources. WeatherNext 3 requires a Google account with WeatherNext data access; CAMS UV requires a free ADS account token (see the Rainradar README).",
             "data": {
               "enable_weathernext": "Enable WeatherNext 3 (global forecast, 64-member ensemble)",
-              "wn_gcp_project_id": "GCP project ID (used for Requester-Pays-free statistics reads)",
-              "wn_service_account_json": "Service-account JSON (paste the full key file content)",
+              "wn_sign_in_google": "Sign in with Google",
               "enable_wn_overlay": "WeatherNext global precipitation overlay (48h @ 1h)",
               "enable_pkg_solar": "Solar package (irradiance, direct beam, cloud layers)",
               "enable_pkg_wind": "Wind package (100 m wind speed and direction)",
               "enable_pkg_probability": "Probability package (24 h rain / frost / heat risk)",
               "enable_cams_uv": "CAMS all-sky UV index (precise, global)",
               "cams_api_token": "ADS API token (see README for how to create one)",
-              "wn_credentials_status": "WeatherNext credentials status",
+              "wn_credentials_status": "WeatherNext account",
               "cams_credentials_status": "CAMS credentials status"
             },
             "data_description": {
-              "wn_service_account_json": "Stored outside config entry options; leave empty to keep the currently stored key.",
+              "wn_sign_in_google": "Check this to re-authorize your Google account. Saves these options and opens the Google consent screen.",
               "cams_api_token": "Format 'user@host:key'. Leave empty to keep the currently stored token."
             }
           }
         }
       }
+    },
+    "abort": {
+      "reauth_started": "These options were saved. A Google sign-in window was opened — complete it there to finish connecting WeatherNext 3."
     }
   }
 }

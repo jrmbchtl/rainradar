@@ -2,15 +2,45 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
 
-from custom_components.rainradar import weathernext as wn, wnframes
+from custom_components.rainradar import weathernext as wn, wnauth, wnframes
 
 UTC = UTC
+
+
+def _google_creds() -> dict:
+    """A stored OAuth credential as the sign-in flow writes it."""
+    return {
+        "wn_google_token": {
+            "refresh_token": "1//refresh",
+            "client_id": "cid.apps.googleusercontent.com",
+            "client_secret": "secret",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        },
+        "wn_account_email": "user@example.com",
+    }
+
+
+def _session_post_ok(payload: dict | None = None) -> MagicMock:
+    """A session whose token refresh returns ``payload``."""
+    resp = MagicMock()
+    resp.status = 200
+    resp.json = AsyncMock(return_value=payload or {"access_token": "at", "expires_in": 3600})
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    post_ctx = MagicMock()
+    post_ctx.__aenter__ = AsyncMock(return_value=resp)
+    post_ctx.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.post = MagicMock(return_value=post_ctx)
+    return session
 
 
 def _sa_info() -> dict:
@@ -42,6 +72,72 @@ def _patch_token(monkeypatch):
         return "fake-token"
 
     monkeypatch.setattr(wn, "get_access_token", _fake_token)
+
+
+async def test_access_token_from_refresh_token(monkeypatch):
+    """A stored refresh token is exchanged for a cached access token."""
+    wnauth._TOKEN_CACHE.clear()
+    session = _session_post_ok()
+    token = await wnauth.get_access_token(_google_creds(), session)
+    assert token == "at"
+    # The refresh grant carries the client credentials and is cached afterwards.
+    _, kwargs = session.post.call_args
+    payload = kwargs["data"]
+    assert payload["grant_type"] == "refresh_token"
+    assert payload["refresh_token"] == "1//refresh"
+    assert payload["client_secret"] == "secret"
+    assert await wnauth.get_access_token(_google_creds(), session) == "at"
+    assert session.post.call_count == 1  # served from cache
+    wnauth._TOKEN_CACHE.clear()
+
+
+async def test_access_token_refresh_failure_returns_none(monkeypatch):
+    """A rejected refresh token yields None rather than raising."""
+    wnauth._TOKEN_CACHE.clear()
+    session = _session_post_ok()
+    resp = MagicMock()
+    resp.status = 401
+    resp.text = AsyncMock(return_value="invalid_grant")
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    session.post = MagicMock(return_value=ctx)
+    assert await wnauth.get_access_token(_google_creds(), session) is None
+    wnauth._TOKEN_CACHE.clear()
+
+
+def test_has_credentials_and_describe():
+    assert wnauth.has_credentials({}) is False
+    assert wnauth.has_credentials(None) is False
+    assert wnauth.has_credentials(_google_creds()) is True
+    # A legacy service-account key still counts so nothing silently breaks.
+    assert wnauth.has_credentials({"wn_service_account_info": {"a": 1}}) is True
+    assert wnauth.describe({}) == "not_configured"
+    assert wnauth.describe(_google_creds()) == "signed_in_as_user@example.com"
+
+
+def test_store_credential_provider_shape():
+    """obstore needs a str token plus a real datetime expiry."""
+    provider = wnauth.store_credential_provider("ya29.token")
+    cred = provider()
+    assert cred["token"] == "ya29.token"
+    assert isinstance(cred["expires_at"], datetime)
+    assert cred["expires_at"] > datetime.now(UTC) + timedelta(minutes=30)
+
+
+def test_open_stats_store_is_authenticated():
+    """Regression: the store must send a bearer token, not read anonymously.
+
+    The bucket is allowlist-protected, so an unauthenticated store can never
+    return data. ``skip_signature=True`` must not be used here — obstore then
+    omits the Authorization header entirely (verified against a local mock).
+    """
+    store = wn.open_stats_store(datetime(2026, 9, 6, 6, tzinfo=UTC), "ya29.token")
+    if store is None:
+        pytest.skip("zarr/obstore not installed")
+    assert type(store).__name__ == "GCSStore"
+    assert store.credential_provider is not None
+    assert store.credential_provider()["token"] == "ya29.token"
 
 
 async def test_find_latest_init_walks_back(monkeypatch):
@@ -99,8 +195,28 @@ def test_parse_init_from_url():
 
 def test_stats_object_url_format():
     url = wn._stats_object_url(datetime(2026, 9, 6, 6, tzinfo=UTC))
-    assert "20260906_06hr_00_preds/predictions.zarr" in url
+    assert "20260906_06hr_00_preds/predictions.zarr/zarr.json" in url
     assert url.startswith("https://weathernext3_statistics_spatial.storage.googleapis.com/")
+
+
+async def test_find_latest_init_probes_a_real_object():
+    """Probing must target an object, not the bare directory prefix.
+
+    The prefix form is not an object, so its 200-vs-404 is ambiguous; zarr.json
+    gives a clean 200 / 403 / 404 signal.
+    """
+    now = datetime(2026, 9, 6, 14, 20, tzinfo=UTC)
+    seen: list[str] = []
+
+    def _get(url, **kwargs):
+        seen.append(url)
+        return _session_ok(404 if "07hr" in url else 200).get(url, **kwargs)
+
+    session = MagicMock()
+    session.get = _get
+    found = await wn.find_latest_init(session, "tok", now=now)
+    assert found is not None and found.hour == 6
+    assert seen and all(url.endswith("/zarr.json") for url in seen)
 
 
 def test_wnframes_grid_to_rgba():

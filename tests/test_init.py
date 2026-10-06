@@ -171,17 +171,53 @@ async def test_v1_entry_migrates_to_v3(
             p.stop()
 
     assert v1_config_entry.state is ConfigEntryState.LOADED
-    assert v1_config_entry.version == 3
+    assert v1_config_entry.version == 4
     # locations -> zones, legacy tracker mirrored
     assert v1_config_entry.options["zones"] == ["zone.home"]
     assert v1_config_entry.options["device_trackers"] == ["device_tracker.old_phone"]
     assert v1_config_entry.options["enable_warnings"] is True
 
 
+async def test_v3_entry_migration_drops_service_account_and_disables_wn3(
+    hass: HomeAssistant,
+) -> None:
+    """v3 -> v4: the service-account path is gone, so WN3 must be re-connected."""
+    from custom_components.rainradar.credentials import (
+        async_get_credentials,
+        async_save_credentials,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Rainradar",
+        version=3,
+        data={},
+        options={"zones": ["zone.home"], "enable_weathernext": True},
+    )
+    entry.add_to_hass(hass)
+    await async_save_credentials(
+        hass, entry.entry_id, {"wn_service_account_info": {"client_email": "x@y.z"}}
+    )
+
+    patches = _patch_network()
+    for p in patches.values():
+        p.start()
+    try:
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    finally:
+        for p in patches.values():
+            p.stop()
+
+    assert entry.version == 4
+    assert entry.options["enable_weathernext"] is False
+    assert await async_get_credentials(hass, entry.entry_id) == {}
+
+
 async def test_migrate_rejects_future_version(hass: HomeAssistant) -> None:
     from custom_components.rainradar import async_migrate_entry
 
-    entry = MockConfigEntry(domain=DOMAIN, title="Rainradar", version=4, data={}, options={})
+    entry = MockConfigEntry(domain=DOMAIN, title="Rainradar", version=5, data={}, options={})
     assert await async_migrate_entry(hass, entry) is False
 
 
@@ -235,8 +271,8 @@ async def test_setup_survives_first_refresh_failure(
     assert any("Initial weather refresh failed" in r.message for r in caplog.records)
 
 
-async def test_v2_entry_migrates_to_v3(hass: HomeAssistant) -> None:
-    """v2 entries gain the v3 experimental keys with safe defaults."""
+async def test_v2_entry_migrates_to_v4(hass: HomeAssistant) -> None:
+    """v2 entries gain the v3 experimental keys and end up at v4."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Rainradar",
@@ -256,7 +292,7 @@ async def test_v2_entry_migrates_to_v3(hass: HomeAssistant) -> None:
             p.stop()
 
     assert entry.state is ConfigEntryState.LOADED
-    assert entry.version == 3
+    assert entry.version == 4
     assert entry.options["enable_weathernext"] is False
     assert entry.options["enable_wn_overlay"] is True
     assert entry.options["enable_pkg_solar"] is False

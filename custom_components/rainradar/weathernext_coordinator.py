@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from . import weathernext as wn
+from . import weathernext as wn, wnauth
 from .const import (
     DOMAIN,
     WEATHERNEXT_UPDATE_INTERVAL,
@@ -65,9 +65,7 @@ class WeatherNextCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             wn._warn_zarr_missing()
             return {"locations": {}, "init_time": None}
 
-        token = await wn.get_access_token(
-            self._credentials["wn_service_account_info"], self._session
-        )
+        token = await wnauth.get_access_token(self._credentials, self._session)
         if token is None:
             raise UpdateFailed("WeatherNext token refresh failed")
 

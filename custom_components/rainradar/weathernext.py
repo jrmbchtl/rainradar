@@ -23,10 +23,10 @@ from typing import Any
 
 import aiohttp
 
+from . import wnauth
 from .const import (
     WEATHERNEXT_DISCOVERY_BACKOFF_HOURS,
     WEATHERNEXT_INTERIM_LAG_MIN,
-    WEATHERNEXT_OAUTH_SCOPE,
     WEATHERNEXT_STATS_BUCKET,
     WEATHERNEXT_STATS_PREFIX,
 )
@@ -61,52 +61,45 @@ WN_STATION_VARS = (
     "station_head_dewpoint_temperature_2m",
 )
 
-_TOKEN_CACHE: dict[str, tuple[float, str]] = {}
-
-
-async def get_access_token(
-    service_account_info: dict[str, Any], session: aiohttp.ClientSession
-) -> str | None:
-    """Exchange a service account for an OAuth2 access token (cached ~50 min)."""
-    import google.auth.transport.requests
-    from google.oauth2 import service_account
-
-    key = service_account_info.get("client_email", "")
-    import time
-
-    cached = _TOKEN_CACHE.get(key)
-    if cached and cached[0] > time.time():
-        return cached[1]
-
-    def _sign() -> tuple[str, datetime | None]:
-        creds = service_account.Credentials.from_service_account_info(
-            service_account_info, scopes=[WEATHERNEXT_OAUTH_SCOPE]
-        )
-        request = google.auth.transport.requests.Request()
-        creds.refresh(request)
-        return creds.token, creds.expiry
-
-    try:
-        token, expiry = await asyncio.to_thread(_sign)
-    except Exception as exc:
-        _LOGGER.warning("WeatherNext token refresh failed: %s", exc)
-        return None
-
-    ttl = (
-        (expiry - datetime.now(UTC)).total_seconds() - 300
-        if expiry
-        else 3000
-    )
-    _TOKEN_CACHE[key] = (time.time() + max(ttl, 60), token)
-    return token
-
-
-def _stats_object_url(init_dt: datetime) -> str:
-    """Public HTTPS URL of the predictions.zarr folder for an init time."""
+def _stats_prefix(init_dt: datetime) -> str:
+    """Object-store prefix of the predictions.zarr folder for an init time."""
     stamp = init_dt.strftime("%Y%m%d_%Hhr")
+    return f"{WEATHERNEXT_STATS_PREFIX}/2026_to_present/{stamp}_00_preds/predictions.zarr"
+
+
+def _stats_object_url(init_dt: datetime, key: str = "zarr.json") -> str:
+    """Public HTTPS URL of one object inside the predictions.zarr folder.
+
+    ``key`` defaults to ``zarr.json``, a real object, so the status code is
+    unambiguous: 200 exists, 403 no allowlist access, 404 not disseminated yet.
+    Probing the bare ``predictions.zarr`` prefix instead is unreliable because
+    it is a directory, not an object.
+    """
     return (
         f"https://{WEATHERNEXT_STATS_BUCKET}.storage.googleapis.com/"
-        f"{WEATHERNEXT_STATS_PREFIX}/2026_to_present/{stamp}_00_preds/predictions.zarr"
+        f"{_stats_prefix(init_dt)}/{key}"
+    )
+
+
+def open_stats_store(init_dt: datetime, access_token: str):
+    """Open an authenticated obstore GCS store for one WN3 init.
+
+    Returns None when the optional zarr/obstore packages are unavailable.
+
+    Do not pass ``skip_signature``: obstore then omits the Authorization header
+    and every read falls back to anonymous, which the allowlist-protected bucket
+    rejects with a 403.
+    """
+    if zarr_missing():
+        _warn_zarr_missing()
+        return None
+
+    import obstore
+
+    return obstore.store.GCSStore(
+        WEATHERNEXT_STATS_BUCKET,
+        prefix=_stats_prefix(init_dt),
+        credential_provider=wnauth.store_credential_provider(access_token),
     )
 
 
@@ -153,16 +146,18 @@ async def find_latest_init(
 
 async def preflight(
     session: aiohttp.ClientSession,
-    service_account_info: dict[str, Any],
+    credentials: dict[str, Any],
 ) -> str | None:
     """Validate credentials + allowlist. Returns an error string, or None if OK."""
     if zarr_missing():
         # Credentials may still be valid; surface the zarr situation so users
         # aren't surprised when forecasts don't appear.
         _warn_zarr_missing()
-    token = await get_access_token(service_account_info, session)
+    if not wnauth.has_credentials(credentials):
+        return "sign_in_required"
+    token = await wnauth.get_access_token(credentials, session)
     if token is None:
-        return "invalid_service_account"
+        return "invalid_credentials"
     now = datetime.now(UTC)
     cutoff = now - timedelta(minutes=WEATHERNEXT_INTERIM_LAG_MIN)
     probe = cutoff.replace(minute=0, second=0, microsecond=0)
@@ -218,17 +213,14 @@ async def fetch_point_forecast(
     """
     if not token:
         return None
-    if zarr_missing():
-        _warn_zarr_missing()
+    store = open_stats_store(init_dt, token)
+    if store is None:
         return None
 
     def _extract() -> dict[str, list[dict]] | None:
-        import obstore
         import xarray as xr
         import zarr as zarr_mod
 
-        url = _stats_object_url(init_dt)
-        store = obstore.store.GCSStore.from_url(url)
         zstore = zarr_mod.storage.ObjectStore(store)
         ds = xr.open_zarr(zstore, chunks={})
 

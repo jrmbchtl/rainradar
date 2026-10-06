@@ -87,7 +87,9 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._wn_frames_enabled = entry.options.get(CONF_ENABLE_WN_OVERLAY, False) and (
             entry.options.get(CONF_ENABLE_WEATHERNEXT, False)
         )
-
+        # WN3 credentials for the global precipitation overlay, read lazily so that a
+        # sign-in performed after setup is picked up without a restart.
+        self._wn_credentials: dict = {}
         try:
             from importlib.util import find_spec
 
@@ -96,12 +98,27 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._pil_available = False
 
     @property
-    def health_state(self) -> bool:
-        return self._health_state
+    def _session(self) -> aiohttp.ClientSession:
+        """Return the shared aiohttp client session."""
+        return aiohttp_client.async_get_clientsession(self.hass)
+
+    async def _async_wn_credentials(self) -> dict:
+        """Return the stored WeatherNext credentials.
+
+        Re-read when absent so a sign-in performed after setup is picked up;
+        a reauth reloads the entry, which rebuilds this coordinator anyway.
+        """
+        if not self._wn_credentials:
+            from .credentials import async_get_credentials
+
+            self._wn_credentials = await async_get_credentials(
+                self.hass, self.entry.entry_id
+            )
+        return self._wn_credentials
 
     @property
-    def _session(self) -> aiohttp.ClientSession:
-        return aiohttp_client.async_get_clientsession(self.hass)
+    def health_state(self) -> bool:
+        return self._health_state
 
     async def _generate_radar_timestamps(self) -> dict[str, list[str]]:
         now = datetime.now(UTC)
@@ -351,12 +368,18 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
 
         from . import wnframes
+        from .wnauth import get_access_token
+
+        # The render closure below runs in a worker thread, so mint the access
+        # token here in the event loop and pass it in.
+        token = await get_access_token(await self._async_wn_credentials(), self._session)
+        if not token:
+            return None
 
         def _render() -> dict[str, list[dict]] | None:
             from datetime import timedelta as _td
 
             import numpy as np
-            import obstore
             import xarray as xr
             import zarr as zarr_mod
 
@@ -364,8 +387,9 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not init_iso:
                 return None
             init_dt = datetime.fromisoformat(init_iso)
-            url = wn._stats_object_url(init_dt)
-            store = obstore.store.GCSStore.from_url(url)
+            store = wn.open_stats_store(init_dt, token)
+            if store is None:
+                return None
             ds = xr.open_zarr(zarr_mod.storage.ObjectStore(store), chunks={})
             var = "experimental_tp_1hr_mean"
             if var not in ds:

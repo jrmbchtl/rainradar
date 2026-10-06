@@ -8,47 +8,59 @@
           "zones": "Zonen",
           "device_trackers": "Gerätetracker",
           "scan_interval": "Aktualisierungsintervall (Sekunden)",
-          "enable_forecast": "MOSMIX-S-Vorhersage aktivieren (48h stündlich)",
+          "enable_forecast": "MOSMIX-S-Vorhersage aktivieren (stündlich)",
           "enable_icon_eu": "ICON-EU phasengetrennten Niederschlag aktivieren",
           "enable_uv": "UV-Index aktivieren (Open-Meteo)",
           "enable_warnings": "DWD-Unwetterwarnungen aktivieren",
           "enable_air_quality": "Luftqualitätsindex aktivieren (Open-Meteo)",
-          "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
-          "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)"
+          "advanced": "Erweitert / Experimentell"
         },
         "sections": {
           "advanced": {
             "name": "Erweitert / Experimentell",
-            "description": "Optionale globale Datenquellen mit hoher Auflösung. WeatherNext 3 benötigt eine Google-Freischaltung und ein Service-Konto; CAMS UV benötigt ein kostenloses ADS-Token (siehe Rainradar-README).",
+            "description": "Optionale globale Datenquellen mit hoher Auflösung. WeatherNext 3 benötigt ein Google-Konto mit Zugriff auf die WeatherNext-Daten; CAMS UV benötigt ein kostenloses ADS-Token (siehe Rainradar-README).",
             "data": {
               "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
-              "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)",
-              "wn_service_account_json": "Service-Konto-JSON (vollständigen Schlüssel einfügen)",
+              "wn_sign_in_google": "Mit Google anmelden",
               "enable_wn_overlay": "Globaler WeatherNext-Niederschlagsoverlay (48h @ 1h)",
               "enable_pkg_solar": "Solar-Paket (Einstrahlung, Direktstrahlung, Wolkenschichten)",
               "enable_pkg_wind": "Wind-Paket (Windgeschwindigkeit und -richtung in 100 m)",
               "enable_pkg_probability": "Wahrscheinlichkeits-Paket (24h Regen-/Frost-/Hitze-Risiko)",
               "enable_cams_uv": "CAMS UV-Index (bewölkt, präzise, global)",
               "cams_api_token": "ADS-API-Token (siehe README zur Erstellung)",
-              "wn_credentials_status": "Status der WeatherNext-Zugangsdaten",
+              "wn_credentials_status": "WeatherNext-Konto",
               "cams_credentials_status": "Status der CAMS-Zugangsdaten"
             },
             "data_description": {
-              "wn_service_account_json": "Wird außerhalb der Optionen gespeichert; leer lassen, um den gespeicherten Schlüssel zu behalten.",
+              "wn_sign_in_google": "Aktivieren, um dich mit dem Google-Konto anzumelden, das Zugriff auf die WeatherNext-Daten hat. Öffnet den Google-Zustimmungsbildschirm in einem neuen Fenster.",
               "cams_api_token": "Format 'user@host:key'. Leer lassen, um das gespeicherte Token zu behalten."
             }
           }
         }
+      },
+      "auth": {
+        "title": "Mit Google anmelden"
+      },
+      "creation": {
+        "title": "Anmeldung wird abgeschlossen"
       }
     },
+    "auth": {
+      "description": "Wähle das Google-Konto aus, dem der Zugriff auf die WeatherNext-Daten gewährt wurde (siehe Rainradar-README), und bestätige die Lese-Berechtigung für Cloud Storage.\n\nDieses Fenster schließt sich automatisch, sobald du fertig bist. Falls nicht, erlaube Pop-ups für Home Assistant in deinem Browser."
+    },
     "abort": {
-      "single_instance_allowed": "Nur eine Rainradar-Konfiguration ist erlaubt."
+      "single_instance_allowed": "Nur eine Rainradar-Konfiguration ist erlaubt.",
+      "reauth_started": "Ein Google-Anmeldefenster wurde geöffnet. Schließe die Anmeldung dort ab und öffne danach die Rainradar-Optionen erneut.",
+      "authorize_rejected": "Die Google-Anmeldung wurde abgelehnt oder abgebrochen.",
+      "missing_google_credentials": "Es ist kein Google-OAuth-Client konfiguriert. Lege zuerst einen unter Einstellungen > Geräte & Dienste > Anwendungsanmeldedaten an (siehe Rainradar-README).",
+      "authorize_url_failed": "Die Google-Anmelde-URL konnte nicht erstellt werden. Prüfe die Anwendungsanmeldedaten und lade Home Assistant neu.",
+      "token_exchange_failed": "Google hat die Anmeldung abgelehnt. Prüfe den OAuth-Client und dessen registrierte Redirect-URI und versuche es erneut.",
+      "no_refresh_token": "Google hat kein Refresh-Token zurückgegeben. Entziehe der App in deinen Google-Kontoeinstellungen den Zugriff und melde dich erneut an."
     },
     "error": {
-      "invalid_service_account_json": "Kein gültiges Google-Service-Konto-JSON (client_email fehlt).",
-      "service_account_required": "WeatherNext benötigt ein Service-Konto-JSON.",
+      "sign_in_required": "Aktiviere WeatherNext 3 und 'Mit Google anmelden', um dein Google-Konto zu verbinden.",
+      "invalid_credentials": "Google hat die gespeicherten Zugangsdaten abgelehnt. Melde dich erneut mit Google an.",
       "allowlist_pending": "WeatherNext-Zugriff noch nicht freigegeben – Google-Datenantrag stellen und auf Freischaltung warten (5-7 Tage).",
-      "invalid_service_account": "Google hat das Service-Konto abgelehnt (falscher Schlüssel oder fehlender Storage-Scope).",
       "http_500": "Google Cloud Storage meldet einen Serverfehler; später erneut versuchen.",
       "no_data_found": "Keine WeatherNext-Daten der letzten 8 Stunden gefunden.",
       "cams_token_required": "CAMS UV benötigt ein ADS-API-Token.",
@@ -63,38 +75,39 @@
           "zones": "Zonen",
           "device_trackers": "Gerätetracker",
           "scan_interval": "Aktualisierungsintervall (Sekunden)",
-          "enable_forecast": "MOSMIX-S-Vorhersage aktivieren (48h stündlich)",
+          "enable_forecast": "MOSMIX-S-Vorhersage aktivieren (stündlich)",
           "enable_icon_eu": "ICON-EU phasengetrennten Niederschlag aktivieren",
           "enable_uv": "UV-Index aktivieren (Open-Meteo)",
           "enable_warnings": "DWD-Unwetterwarnungen aktivieren",
           "enable_air_quality": "Luftqualitätsindex aktivieren (Open-Meteo)",
-          "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
-          "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)"
+          "advanced": "Erweitert / Experimentell"
         },
         "sections": {
           "advanced": {
             "name": "Erweitert / Experimentell",
-            "description": "Optionale globale Datenquellen mit hoher Auflösung. WeatherNext 3 benötigt eine Google-Freischaltung und ein Service-Konto; CAMS UV benötigt ein kostenloses ADS-Token (siehe Rainradar-README).",
+            "description": "Optionale globale Datenquellen mit hoher Auflösung. WeatherNext 3 benötigt ein Google-Konto mit Zugriff auf die WeatherNext-Daten; CAMS UV benötigt ein kostenloses ADS-Token (siehe Rainradar-README).",
             "data": {
               "enable_weathernext": "WeatherNext 3 aktivieren (globale Vorhersage, 64-teiliges Ensemble)",
-              "wn_gcp_project_id": "GCP-Projekt-ID (für gebührenfreie Statistik-Lesezugriffe)",
-              "wn_service_account_json": "Service-Konto-JSON (vollständigen Schlüssel einfügen)",
+              "wn_sign_in_google": "Mit Google anmelden",
               "enable_wn_overlay": "Globaler WeatherNext-Niederschlagsoverlay (48h @ 1h)",
               "enable_pkg_solar": "Solar-Paket (Einstrahlung, Direktstrahlung, Wolkenschichten)",
               "enable_pkg_wind": "Wind-Paket (Windgeschwindigkeit und -richtung in 100 m)",
               "enable_pkg_probability": "Wahrscheinlichkeits-Paket (24h Regen-/Frost-/Hitze-Risiko)",
               "enable_cams_uv": "CAMS UV-Index (bewölkt, präzise, global)",
               "cams_api_token": "ADS-API-Token (siehe README zur Erstellung)",
-              "wn_credentials_status": "Status der WeatherNext-Zugangsdaten",
+              "wn_credentials_status": "WeatherNext-Konto",
               "cams_credentials_status": "Status der CAMS-Zugangsdaten"
             },
             "data_description": {
-              "wn_service_account_json": "Wird außerhalb der Optionen gespeichert; leer lassen, um den gespeicherten Schlüssel zu behalten.",
+              "wn_sign_in_google": "Aktivieren, um dein Google-Konto erneut zu autorisieren. Speichert diese Optionen und öffnet den Google-Zustimmungsbildschirm.",
               "cams_api_token": "Format 'user@host:key'. Leer lassen, um das gespeicherte Token zu behalten."
             }
           }
         }
       }
+    },
+    "abort": {
+      "reauth_started": "Diese Optionen wurden gespeichert. Ein Google-Anmeldefenster wurde geöffnet – schließe die Anmeldung dort ab, um WeatherNext 3 fertig einzurichten."
     }
   }
 }

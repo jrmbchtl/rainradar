@@ -69,11 +69,13 @@ DWD_WMS_RADAR_STYLE = "niederschlagsradar"
 DWD_WMS_FORMAT = "image/png"
 DWD_WMS_VERSION = "1.1.1"
 
-INTEGRATION_VERSION = "0.6.5"
+INTEGRATION_VERSION = "0.6.6"
 
 WEATHERNEXT_STATS_BUCKET = "weathernext3_statistics_spatial"
 WEATHERNEXT_STATS_PREFIX = "weathernext_3_0_0_statistics/zarr"
 WEATHERNEXT_OAUTH_SCOPE = "https://www.googleapis.com/auth/devstorage.read_only"
+WEATHERNEXT_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+WEATHERNEXT_TOKEN_URL = "https://oauth2.googleapis.com/token"
 # Interim inits disseminate at init+7h10m; synoptic at init+7h45m.
 WEATHERNEXT_INTERIM_LAG_MIN = 430
 WEATHERNEXT_DISCOVERY_BACKOFF_HOURS = 8

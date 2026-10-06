@@ -87,10 +87,10 @@ def test_redirect_uri_prefers_external_url(hass: HomeAssistant) -> None:
     effectively always). That needs Nabu Casa to resolve the instance and does
     not match the URI the user registers — Google answers redirect_uri_mismatch.
     """
-    hass.config.external_url = "https://homeassistant.bechtle.land"
+    hass.config.external_url = "https://homeassistant.example.com"
     assert (
         _impl(hass).redirect_uri
-        == "https://homeassistant.bechtle.land/auth/external/callback"
+        == "https://homeassistant.example.com/auth/external/callback"
     )
 
 
@@ -140,7 +140,7 @@ async def test_authorize_url_carries_the_instance_redirect_uri(
     registers <instance>/auth/external/callback but HA sends
     my.home-assistant.io/redirect/oauth.
     """
-    hass.config.external_url = "https://homeassistant.bechtle.land"
+    hass.config.external_url = "https://homeassistant.example.com"
     request = MagicMock(headers={"HA-Frontend-Base": "https://ignored.example"})
     with patch(
         "homeassistant.helpers.http.current_request",
@@ -151,5 +151,5 @@ async def test_authorize_url_carries_the_instance_redirect_uri(
     from urllib.parse import parse_qs, urlparse
 
     redirect_uri = parse_qs(urlparse(url).query)["redirect_uri"][0]
-    assert redirect_uri == "https://homeassistant.bechtle.land/auth/external/callback"
+    assert redirect_uri == "https://homeassistant.example.com/auth/external/callback"
     assert "my.home-assistant.io" not in url

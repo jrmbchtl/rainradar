@@ -109,6 +109,11 @@
     },
     "abort": {
       "reauth_started": "Ein Google-Anmeldedialog wird geöffnet. Deine Rainradar-Einstellungen werden übernommen, sobald du ihn dort bestätigst. Falls er sich nicht öffnet, öffne Einstellungen > Geräte & Dienste und nutze die Karte 'Aufmerksamkeit erforderlich' für Rainradar."
+    },
+    "error": {
+      "missing_google_credentials": "Es ist kein Google-OAuth-Client konfiguriert. Lege zuerst einen unter Einstellungen > Geräte & Dienste > Anwendungsanmeldedaten an (Domäne: Rainradar).",
+      "authorize_url_failed": "Die Google-Anmelde-URL konnte nicht erstellt werden. Prüfe, ob für diese Home-Instanz eine externe URL konfiguriert ist.",
+      "sign_in_failed": "Die Google-Anmeldung konnte nicht gestartet werden. Bitte versuche es erneut."
     }
   }
 }

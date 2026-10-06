@@ -109,6 +109,11 @@
     },
     "abort": {
       "reauth_started": "A Google sign-in dialog is opening. Your Rainradar settings are applied once you approve it there. If it does not open, go to Settings > Devices & Services and use the 'Attention required' card for Rainradar."
+    },
+    "error": {
+      "missing_google_credentials": "No Google OAuth client is configured. Add one under Settings > Devices & Services > Application Credentials (domain: Rainradar) before signing in.",
+      "authorize_url_failed": "Could not build the Google sign-in URL. Check that this Home Assistant instance has an external URL configured.",
+      "sign_in_failed": "The Google sign-in could not be started. Please try again."
     }
   }
 }

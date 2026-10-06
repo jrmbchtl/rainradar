@@ -23,5 +23,5 @@
     "google-auth>=2.0.0",
     "cdsapi>=0.7.0"
   ],
-  "version": "0.6.6.2"
+  "version": "0.6.6.3"
 }

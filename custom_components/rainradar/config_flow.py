@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 import aiohttp
-from homeassistant import config_entries
+from homeassistant import config_entries, data_entry_flow
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import section
 from homeassistant.helpers import aiohttp_client, config_entry_oauth2_flow, selector
@@ -522,20 +522,24 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
 
     async def _async_start_wn_signin(
         self, options: dict[str, Any]
-    ) -> config_entries.ConfigFlowResult:
-        """Chain to a reauth flow that runs the Google sign-in.
+    ) -> tuple[str, str | None]:
+        """Start the reauth flow that runs the Google sign-in.
+
+        Returns ``(flow_id, error)``: on success the id of a live reauth flow, on
+        failure ``("", reason)``.
 
         The options are deliberately NOT written here. Writing them fires the
         entry's update listener, which reloads the entry — and
         ``ConfigEntry.async_reload`` aborts every in-progress reauth flow for
-        that entry, killing the very flow we are about to chain to (the frontend
-        then reports "invalid flow specified"). Instead they ride along in the
-        flow's init data and get applied by ``async_update_reload_and_abort``
-        once the sign-in succeeds.
+        that entry, killing the very flow we are about to chain to. Instead they
+        ride along in the flow's init data and get applied by
+        ``async_update_reload_and_abort`` once the sign-in succeeds.
 
-        ``next_flow`` on an abort result makes the frontend open the chained
-        config-flow dialog straight away, which is what renders the external
-        step and triggers the Google consent window.
+        Never chain to a flow that has already finished: ``async_init`` returns
+        an ABORT result when the first step aborts (e.g. no OAuth client
+        configured), and HA removes such flows from progress immediately, so
+        ``flow_id`` would be dead and the frontend would report "invalid flow
+        specified" instead of the real reason.
         """
         entry = self.config_entry
         result = await self.hass.config_entries.flow.async_init(
@@ -548,9 +552,9 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
             ),
             data={**entry.data, _WN_PENDING_OPTIONS: options},
         )
-        return self.async_abort(
-            reason="reauth_started", next_flow=("config_flow", result["flow_id"])
-        )
+        if result["type"] is data_entry_flow.FlowResultType.ABORT:
+            return "", str(result.get("reason") or "sign_in_failed")
+        return str(result["flow_id"]), None
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         from . import wnauth
@@ -578,16 +582,32 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
             # The OAuth external step cannot run in the options flow: HA's
             # /auth/external/callback resumes the *config* flow manager only,
             # and the frontend does not send the HA-Frontend-Base header on
-            # options-flow API calls, so async_get_redirect_uri() would raise.
-            # Start a reauth *config* flow ourselves so we hold its flow_id, and
-            # chain to it with next_flow — the frontend opens that dialog
-            # immediately. entry.async_start_reauth() cannot be used here: it
-            # returns no flow_id (so no chaining), opens nothing, and files a
-            # repair issue that is wrong for a deliberate sign-in.
+            # options-flow API calls. Start a reauth *config* flow ourselves so
+            # we hold its flow_id, then chain to it with next_flow — the frontend
+            # opens that dialog immediately. entry.async_start_reauth() cannot be
+            # used: it returns no flow_id (so no chaining), opens nothing, and
+            # files a repair issue that is wrong for a deliberate sign-in.
             if advanced.get(CONF_WN_SIGN_IN):
-                return await self._async_start_wn_signin(options)
+                # Check up front so the common case (no OAuth client configured)
+                # reports that plainly instead of churning a throwaway flow.
+                implementations = await config_entry_oauth2_flow.async_get_implementations(
+                    self.hass, DOMAIN
+                )
+                if not implementations:
+                    errors = {CONF_WN_SIGN_IN: "missing_google_credentials"}
+                else:
+                    flow_id, reason = await self._async_start_wn_signin(options)
+                    if reason is None:
+                        return self.async_abort(
+                            reason="reauth_started",
+                            next_flow=("config_flow", flow_id),
+                        )
+                    # The reauth flow aborted on its very first step; surface
+                    # the real reason rather than chaining to a dead flow id.
+                    errors = {CONF_WN_SIGN_IN: reason}
+            else:
+                errors = await self._handle_secrets_and_preflight(advanced, options)
 
-            errors = await self._handle_secrets_and_preflight(advanced, options)
             if errors:
                 creds = await async_get_credentials(self.hass, entry.entry_id)
                 return self.async_show_form(

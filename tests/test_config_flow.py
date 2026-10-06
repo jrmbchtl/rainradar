@@ -348,6 +348,62 @@ async def test_options_signin_chains_to_reauth_flow(hass: HomeAssistant) -> None
     assert len(hass.config_entries.async_entries(DOMAIN)) == 1
 
 
+async def test_options_signin_without_credentials_reports_it(
+    hass: HomeAssistant,
+) -> None:
+    """Regression: no OAuth client must surface an error, not a dead flow id.
+
+    async_step_auth aborts immediately when no application credentials exist,
+    and HA removes an aborted flow from progress at once. Chaining to that
+    flow_id is what produced "Config flow could not be loaded: invalid flow
+    specified" with nothing in the log.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Rainradar",
+        version=4,
+        data={},
+        options={"zones": ["zone.home"], "scan_interval": 600},
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == FlowResultType.FORM
+
+    # No application_credentials are set up in this test, so the real
+    # async_get_implementations() returns {}.
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_ZONES: ["zone.home"],
+            CONF_DEVICE_TRACKERS: [],
+            CONF_SCAN_INTERVAL: 1200,
+            "enable_forecast": True,
+            "enable_icon_eu": True,
+            "enable_uv": True,
+            "enable_warnings": True,
+            "enable_air_quality": True,
+            "advanced": {
+                "enable_weathernext": True,
+                "wn_sign_in_google": True,
+                "enable_wn_overlay": True,
+                "enable_pkg_solar": False,
+                "enable_pkg_wind": False,
+                "enable_pkg_probability": False,
+                "enable_cams_uv": False,
+            },
+        },
+    )
+    await hass.async_block_till_done()
+
+    # A form with the real reason — not an abort chaining to nothing.
+    assert result["type"] == FlowResultType.FORM
+    assert result["errors"] == {"wn_sign_in_google": "missing_google_credentials"}
+    assert "next_flow" not in result
+    # Options must be untouched.
+    assert entry.options[CONF_SCAN_INTERVAL] == 600
+
+
 def test_google_oauth_impl_requests_offline_access(hass) -> None:
     """The sign-in implementation asks for offline access + the read-only scope.
 

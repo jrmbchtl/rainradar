@@ -93,7 +93,23 @@ holds a credential on your behalf.
      (e.g. `https://home.example.com/auth/external/callback`) and click **Create**
 
    > Use the URL you actually open Home Assistant with, including the port if
-   > non-standard. The redirect URI must match exactly.
+   > non-standard, and without a trailing slash. The redirect URI must match
+   > **exactly** or Google answers `Error 400: redirect_uri_mismatch`.
+   >
+   > Rainradar sends **your instance's own** callback — the base of that URL is
+   > taken from Home Assistant's `external_url`, falling back to `internal_url`.
+   > It deliberately does *not* use `https://my.home-assistant.io/redirect/oauth`
+   > (which is what most Google integrations use), because that requires your
+   > instance to be linked to Nabu Casa to resolve the redirect home.
+   >
+   > **If `external_url` is not set**, set it in `configuration.yaml`
+   > (`external_url: https://home.example.com`) and restart, otherwise the
+   > redirect falls back to `internal_url` — fine on your LAN, but Google will
+   > send the browser there, so it must be reachable from wherever you sign in.
+   >
+   > You can register more than one redirect URI. Adding
+   > `https://my.home-assistant.io/redirect/oauth` as well is harmless and lets
+   > you try the Nabu Casa route if you prefer.
 
 7. Copy the **Client ID** and **Client secret** — the secret cannot be retrieved
    again after you close the dialog.

@@ -58,6 +58,10 @@ SECRET_KEYS = ("cams_api_token",)
 
 CONF_WN_SIGN_IN = "wn_sign_in_google"
 
+# Init-data key that carries the options dialog's pending settings through the
+# reauth flow, so they are applied only once the sign-in has actually succeeded.
+_WN_PENDING_OPTIONS = "wn_pending_options"
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -437,8 +441,16 @@ class RainradarConfigFlow(
         # one. Branch on `source` — HA passes the entry data to async_step_reauth
         # as an argument (flow.init_data), it is NOT in flow.context.
         if self.source == config_entries.SOURCE_REAUTH:
+            # Options pending from the options dialog are applied now, atomically
+            # with the credential, so the entry is never briefly enabled without
+            # one. A coordinator-triggered reauth carries no pending options and
+            # must leave the existing options untouched.
+            pending = getattr(self, "_reauth_entry_data", {}).pop(
+                _WN_PENDING_OPTIONS, None
+            )
+            extra = {"options": pending} if pending is not None else {}
             return self.async_update_reload_and_abort(
-                self._get_reauth_entry(), data_updates={}
+                self._get_reauth_entry(), data_updates={}, **extra
             )
 
         # Otherwise the user already submitted their settings before signing in,
@@ -460,10 +472,10 @@ class RainradarConfigFlow(
         Reached either from the "Attention required" card (token failure) or
         chained from the options dialog via ``next_flow``. The entry data arrives
         as an argument — HA keeps it on ``flow.init_data``, never in the flow
-        context — but we only need the entry id, which ``_get_reauth_entry()``
-        reads from the context, so the data is not retained.
+        context — and carries the options dialog's pending settings when the
+        flow was chained, so keep it for the completion step.
         """
-        del entry_data
+        self._reauth_entry_data = dict(entry_data or {})
         return await self.async_step_auth()
 
     @staticmethod
@@ -511,15 +523,21 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
     async def _async_start_wn_signin(
         self, options: dict[str, Any]
     ) -> config_entries.ConfigFlowResult:
-        """Persist options, then chain to a reauth flow that runs the sign-in.
+        """Chain to a reauth flow that runs the Google sign-in.
+
+        The options are deliberately NOT written here. Writing them fires the
+        entry's update listener, which reloads the entry — and
+        ``ConfigEntry.async_reload`` aborts every in-progress reauth flow for
+        that entry, killing the very flow we are about to chain to (the frontend
+        then reports "invalid flow specified"). Instead they ride along in the
+        flow's init data and get applied by ``async_update_reload_and_abort``
+        once the sign-in succeeds.
 
         ``next_flow`` on an abort result makes the frontend open the chained
         config-flow dialog straight away, which is what renders the external
         step and triggers the Google consent window.
         """
         entry = self.config_entry
-        self.hass.config_entries.async_update_entry(entry, options=options)
-
         result = await self.hass.config_entries.flow.async_init(
             DOMAIN,
             context=config_entries.ConfigFlowContext(
@@ -528,7 +546,7 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
                 title_placeholders={"name": entry.title},
                 unique_id=entry.unique_id,
             ),
-            data=entry.data,
+            data={**entry.data, _WN_PENDING_OPTIONS: options},
         )
         return self.async_abort(
             reason="reauth_started", next_flow=("config_flow", result["flow_id"])

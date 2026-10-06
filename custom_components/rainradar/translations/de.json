@@ -108,7 +108,7 @@
       }
     },
     "abort": {
-      "reauth_started": "Diese Optionen wurden gespeichert. Ein Google-Anmeldedialog wird geöffnet – bestätige die Anfrage dort, um WeatherNext 3 fertig einzurichten."
+      "reauth_started": "Ein Google-Anmeldedialog wird geöffnet. Deine Rainradar-Einstellungen werden übernommen, sobald du ihn dort bestätigst. Falls er sich nicht öffnet, öffne Einstellungen > Geräte & Dienste und nutze die Karte 'Aufmerksamkeit erforderlich' für Rainradar."
     }
   }
 }

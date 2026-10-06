@@ -289,8 +289,10 @@ async def test_options_signin_chains_to_reauth_flow(hass: HomeAssistant) -> None
     assert result["reason"] == "reauth_started"
     # next_flow is what makes the frontend open the sign-in dialog.
     assert result["next_flow"][0] == "config_flow"
-    # Options must survive the abort, otherwise the user's toggles are lost.
-    assert entry.options[CONF_SCAN_INTERVAL] == 1200
+    # Options must NOT be written here: doing so fires the update listener,
+    # which reloads the entry, and async_reload aborts every in-progress reauth
+    # flow for it — killing the flow we just chained to.
+    assert entry.options[CONF_SCAN_INTERVAL] == 600
     # And it must be a reauth flow for the SAME entry.
     chained = [
         f
@@ -302,6 +304,48 @@ async def test_options_signin_chains_to_reauth_flow(hass: HomeAssistant) -> None
     assert len(chained) == 1
     assert chained[0]["context"]["source"] == config_entries.SOURCE_REAUTH
     assert chained[0]["context"]["entry_id"] == entry.entry_id
+
+    # Regression guard for the reported "invalid flow specified" failure.
+    # Writing those options fires the entry's update listener, which reloads
+    # the entry, and ConfigEntry.async_reload() then aborts every in-progress
+    # reauth flow for that entry — destroying the sign-in dialog we just chained
+    # to. Nothing may reload the entry behind our back, so after letting the
+    # event loop settle the chained flow must still be alive.
+    import asyncio
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+        await hass.async_block_till_done()
+    assert any(
+        f["flow_id"] == result["next_flow"][1]
+        for f in hass.config_entries.flow.async_progress_by_handler(
+            DOMAIN, include_uninitialized=True
+        )
+    ), "the chained sign-in flow must survive; nothing should reload the entry"
+
+    # Drive the chained flow to completion and confirm the pending options are
+    # only then applied, together with the credential.
+    impl.async_resolve_external_data = AsyncMock(
+        return_value={"access_token": "at", "refresh_token": "rt"}
+    )
+    impl.client_id = "cid"
+    impl.client_secret = "csec"
+    impl.token_url = "https://oauth2.googleapis.com/token"
+    chained_id = result["next_flow"][1]
+    with patch.object(cf, "_fetch_account_email", AsyncMock(return_value=None)):
+        done = await hass.config_entries.flow.async_configure(
+            chained_id, {"code": "c", "state": {"flow_id": chained_id}}
+        )
+        await hass.async_block_till_done()
+        done = await hass.config_entries.flow.async_configure(chained_id)
+        await hass.async_block_till_done()
+
+    assert done["type"] == FlowResultType.ABORT
+    assert done["reason"] == "reauth_successful"
+    assert entry.options[CONF_SCAN_INTERVAL] == 1200
+    assert entry.options["enable_weathernext"] is True
+    # Still only one entry, and the flow is gone once finished.
+    assert len(hass.config_entries.async_entries(DOMAIN)) == 1
 
 
 def test_google_oauth_impl_requests_offline_access(hass) -> None:

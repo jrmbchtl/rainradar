@@ -108,7 +108,7 @@
       }
     },
     "abort": {
-      "reauth_started": "These options were saved. A Google sign-in dialog is opening — approve the request there to finish connecting WeatherNext 3."
+      "reauth_started": "A Google sign-in dialog is opening. Your Rainradar settings are applied once you approve it there. If it does not open, go to Settings > Devices & Services and use the 'Attention required' card for Rainradar."
     }
   }
 }

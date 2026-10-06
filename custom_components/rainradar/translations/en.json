@@ -50,7 +50,8 @@
     },
     "abort": {
       "single_instance_allowed": "Only one Rainradar configuration is allowed.",
-      "reauth_started": "A Google sign-in window was opened. Complete it there, then reopen the Rainradar options.",
+      "reauth_successful": "Successfully signed in with Google. WeatherNext 3 is connected again.",
+      "reauth_started": "A Google sign-in dialog was started. If it did not open, go to Settings > Devices & Services and use the 'Attention required' card for Rainradar.",
       "authorize_rejected": "Google sign-in was declined or cancelled.",
       "missing_google_credentials": "No Google OAuth client is configured. Add one under Settings > Devices & Services > Application Credentials first (see the Rainradar README).",
       "authorize_url_failed": "Could not build the Google sign-in URL. Check the application credentials and reload.",
@@ -107,7 +108,7 @@
       }
     },
     "abort": {
-      "reauth_started": "These options were saved. A Google sign-in window was opened — complete it there to finish connecting WeatherNext 3."
+      "reauth_started": "These options were saved. A Google sign-in dialog is opening — approve the request there to finish connecting WeatherNext 3."
     }
   }
 }

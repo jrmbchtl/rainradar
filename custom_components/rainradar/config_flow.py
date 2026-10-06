@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import logging
 from typing import Any
 
@@ -432,9 +433,13 @@ class RainradarConfigFlow(
 
         _LOGGER.info("Rainradar: WeatherNext 3 signed in as %s", account or "unknown")
 
-        # A reauth flow has an entry already; finish it so the entry reloads.
-        if entry_data := (self.context or {}).get("entry_data"):
-            return self.async_create_entry(title="", data=dict(entry_data))
+        # A reauth flow must update the existing entry, never create a second
+        # one. Branch on `source` — HA passes the entry data to async_step_reauth
+        # as an argument (flow.init_data), it is NOT in flow.context.
+        if self.source == config_entries.SOURCE_REAUTH:
+            return self.async_update_reload_and_abort(
+                self._get_reauth_entry(), data_updates={}
+            )
 
         # Otherwise the user already submitted their settings before signing in,
         # so replay that submission. The sign-in flag is now a no-op because a
@@ -450,7 +455,15 @@ class RainradarConfigFlow(
     async def async_step_reauth(
         self, entry_data: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Re-run the Google sign-in for an existing entry."""
+        """Re-run the Google sign-in for an existing entry.
+
+        Reached either from the "Attention required" card (token failure) or
+        chained from the options dialog via ``next_flow``. The entry data arrives
+        as an argument — HA keeps it on ``flow.init_data``, never in the flow
+        context — but we only need the entry id, which ``_get_reauth_entry()``
+        reads from the context, so the data is not retained.
+        """
+        del entry_data
         return await self.async_step_auth()
 
     @staticmethod
@@ -467,6 +480,59 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
     Uses the built-in ``self.config_entry`` property — do not store the
     entry on the instance (that pattern is phased out in HA).
     """
+
+    @callback
+    def async_abort(
+        self,
+        *,
+        reason: str,
+        description_placeholders: Mapping[str, str] | None = None,
+        translation_domain: str | None = None,
+        next_flow: tuple[config_entries.FlowType, str] | None = None,
+    ) -> config_entries.ConfigFlowResult:
+        """Abort the options flow, optionally chaining into another flow.
+
+        Upstream only accepts ``next_flow`` on ``ConfigFlow.async_abort``, but the
+        frontend honours it on an *abort* result from any flow type (it opens
+        ``showConfigFlowDialog({continueFlowId})``), and the flow-result
+        serializer copies extra keys through verbatim. OptionsFlow is the only
+        route to "sign in again" that does not make the user leave for the
+        Devices & Services page to click an "Attention required" card.
+        """
+        result = super().async_abort(
+            reason=reason,
+            description_placeholders=description_placeholders,
+            translation_domain=translation_domain,
+        )
+        if next_flow is not None:
+            result["next_flow"] = next_flow
+        return result
+
+    async def _async_start_wn_signin(
+        self, options: dict[str, Any]
+    ) -> config_entries.ConfigFlowResult:
+        """Persist options, then chain to a reauth flow that runs the sign-in.
+
+        ``next_flow`` on an abort result makes the frontend open the chained
+        config-flow dialog straight away, which is what renders the external
+        step and triggers the Google consent window.
+        """
+        entry = self.config_entry
+        self.hass.config_entries.async_update_entry(entry, options=options)
+
+        result = await self.hass.config_entries.flow.async_init(
+            DOMAIN,
+            context=config_entries.ConfigFlowContext(
+                source=config_entries.SOURCE_REAUTH,
+                entry_id=entry.entry_id,
+                title_placeholders={"name": entry.title},
+                unique_id=entry.unique_id,
+            ),
+            data=entry.data,
+        )
+        return self.async_abort(
+            reason="reauth_started", next_flow=("config_flow", result["flow_id"])
+        )
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         from . import wnauth
@@ -491,12 +557,17 @@ class RainradarOptionsFlow(_SecretsPreflightMixin, config_entries.OptionsFlow):
             options.update(_wn_defaults(advanced))
             options[CONF_ENABLE_CAMS_UV] = bool(advanced.get(CONF_ENABLE_CAMS_UV, False))
 
-            # HA's /auth/external/callback only resumes the *config* flow
-            # manager, so an external step started from here would never come
-            # back. Delegate the sign-in to a reauth flow instead.
+            # The OAuth external step cannot run in the options flow: HA's
+            # /auth/external/callback resumes the *config* flow manager only,
+            # and the frontend does not send the HA-Frontend-Base header on
+            # options-flow API calls, so async_get_redirect_uri() would raise.
+            # Start a reauth *config* flow ourselves so we hold its flow_id, and
+            # chain to it with next_flow — the frontend opens that dialog
+            # immediately. entry.async_start_reauth() cannot be used here: it
+            # returns no flow_id (so no chaining), opens nothing, and files a
+            # repair issue that is wrong for a deliberate sign-in.
             if advanced.get(CONF_WN_SIGN_IN):
-                entry.async_start_reauth(self.hass)
-                return self.async_abort(reason="reauth_started")
+                return await self._async_start_wn_signin(options)
 
             errors = await self._handle_secrets_and_preflight(advanced, options)
             if errors:

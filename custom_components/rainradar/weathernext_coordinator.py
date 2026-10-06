@@ -67,6 +67,11 @@ class WeatherNextCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         token = await wnauth.get_access_token(self._credentials, self._session)
         if token is None:
+            # The refresh token is gone or was revoked. Ask the user to sign in
+            # again — this raises the "Attention required" card on the Devices &
+            # Services page, which the user clicks to open the Google consent
+            # screen. Without this the entry just logs failures forever.
+            self.config_entry.async_start_reauth_if_available(self.hass)
             raise UpdateFailed("WeatherNext token refresh failed")
 
         init_dt = await wn.find_latest_init(self._session, token)

@@ -50,7 +50,8 @@
     },
     "abort": {
       "single_instance_allowed": "Nur eine Rainradar-Konfiguration ist erlaubt.",
-      "reauth_started": "Ein Google-Anmeldefenster wurde geöffnet. Schließe die Anmeldung dort ab und öffne danach die Rainradar-Optionen erneut.",
+      "reauth_successful": "Erfolgreich mit Google angemeldet. WeatherNext 3 ist wieder verbunden.",
+      "reauth_started": "Ein Google-Anmeldedialog wurde gestartet. Falls er sich nicht geöffnet hat, öffne Einstellungen > Geräte & Dienste und nutze die Karte 'Aufmerksamkeit erforderlich' für Rainradar.",
       "authorize_rejected": "Die Google-Anmeldung wurde abgelehnt oder abgebrochen.",
       "missing_google_credentials": "Es ist kein Google-OAuth-Client konfiguriert. Lege zuerst einen unter Einstellungen > Geräte & Dienste > Anwendungsanmeldedaten an (siehe Rainradar-README).",
       "authorize_url_failed": "Die Google-Anmelde-URL konnte nicht erstellt werden. Prüfe die Anwendungsanmeldedaten und lade Home Assistant neu.",
@@ -107,7 +108,7 @@
       }
     },
     "abort": {
-      "reauth_started": "Diese Optionen wurden gespeichert. Ein Google-Anmeldefenster wurde geöffnet – schließe die Anmeldung dort ab, um WeatherNext 3 fertig einzurichten."
+      "reauth_started": "Diese Optionen wurden gespeichert. Ein Google-Anmeldedialog wird geöffnet – bestätige die Anfrage dort, um WeatherNext 3 fertig einzurichten."
     }
   }
 }

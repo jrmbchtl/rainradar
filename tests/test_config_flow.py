@@ -169,6 +169,141 @@ async def test_sign_in_goes_to_external_step(hass: HomeAssistant) -> None:
     assert "devstorage.read_only" in url
 
 
+async def test_reauth_signin_updates_entry_instead_of_creating_a_second_one(
+    hass: HomeAssistant,
+) -> None:
+    """Regression: a reauth sign-in must not fall through to the new-entry path.
+
+    HA passes the entry data to async_step_reauth as an argument, not via
+    flow.context, so a context lookup never matches. Branching on the wrong
+    thing here created a duplicate Rainradar entry after every reauth.
+    """
+    from custom_components.rainradar import config_flow as cf
+
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Rainradar", version=4, data={}, options={}
+    )
+    entry.add_to_hass(hass)
+
+    impl = MagicMock()
+    impl.async_generate_authorize_url = AsyncMock(
+        return_value="https://accounts.google.com/x"
+    )
+    impl.async_resolve_external_data = AsyncMock(
+        return_value={"access_token": "at", "refresh_token": "rt"}
+    )
+    impl.client_id = "cid"
+    impl.client_secret = "csec"
+    impl.token_url = "https://oauth2.googleapis.com/token"
+
+    with (
+        patch.object(
+            cf.config_entry_oauth2_flow,
+            "async_get_implementations",
+            AsyncMock(return_value={"google": impl}),
+        ),
+        patch.object(cf, "_fetch_account_email", AsyncMock(return_value=None)),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={
+                "source": config_entries.SOURCE_REAUTH,
+                "entry_id": entry.entry_id,
+            },
+            data=entry.data,
+        )
+        flow_id = result["flow_id"]
+        assert result["type"] == FlowResultType.EXTERNAL_STEP
+        result = await hass.config_entries.flow.async_configure(
+            flow_id, {"code": "auth-code", "state": {"flow_id": flow_id}}
+        )
+        await hass.async_block_till_done()
+        # Frontend GETs the flow, which advances past external_step_done.
+        result = await hass.config_entries.flow.async_configure(flow_id)
+        await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    # The decisive assertion: still exactly one entry.
+    entries = hass.config_entries.async_entries(DOMAIN)
+    assert len(entries) == 1
+    assert entries[0].entry_id == entry.entry_id
+
+
+async def test_options_signin_chains_to_reauth_flow(hass: HomeAssistant) -> None:
+    """Options sign-in must hand the frontend a reauth flow to open.
+
+    The frontend does not auto-open a dialog for a backend-initiated flow — it
+    only renders an "Attention required" card — so the options flow has to pass
+    next_flow explicitly, and persist the submitted options on the way out.
+    """
+    from custom_components.rainradar import config_flow as cf
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Rainradar",
+        version=4,
+        data={},
+        options={"zones": ["zone.home"], "scan_interval": 600},
+    )
+    entry.add_to_hass(hass)
+
+    impl = MagicMock()
+    impl.async_generate_authorize_url = AsyncMock(
+        return_value="https://accounts.google.com/x"
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == FlowResultType.FORM
+
+    with patch.object(
+        cf.config_entry_oauth2_flow,
+        "async_get_implementations",
+        AsyncMock(return_value={"google": impl}),
+    ):
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                CONF_ZONES: ["zone.home"],
+                CONF_DEVICE_TRACKERS: [],
+                CONF_SCAN_INTERVAL: 1200,
+                "enable_forecast": True,
+                "enable_icon_eu": True,
+                "enable_uv": True,
+                "enable_warnings": True,
+                "enable_air_quality": True,
+                "advanced": {
+                    "enable_weathernext": True,
+                    "wn_sign_in_google": True,
+                    "enable_wn_overlay": True,
+                    "enable_pkg_solar": False,
+                    "enable_pkg_wind": False,
+                    "enable_pkg_probability": False,
+                    "enable_cams_uv": False,
+                },
+            },
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] == FlowResultType.ABORT
+    assert result["reason"] == "reauth_started"
+    # next_flow is what makes the frontend open the sign-in dialog.
+    assert result["next_flow"][0] == "config_flow"
+    # Options must survive the abort, otherwise the user's toggles are lost.
+    assert entry.options[CONF_SCAN_INTERVAL] == 1200
+    # And it must be a reauth flow for the SAME entry.
+    chained = [
+        f
+        for f in hass.config_entries.flow.async_progress_by_handler(
+            DOMAIN, include_uninitialized=True
+        )
+        if f["flow_id"] == result["next_flow"][1]
+    ]
+    assert len(chained) == 1
+    assert chained[0]["context"]["source"] == config_entries.SOURCE_REAUTH
+    assert chained[0]["context"]["entry_id"] == entry.entry_id
+
+
 def test_google_oauth_impl_requests_offline_access(hass) -> None:
     """The sign-in implementation asks for offline access + the read-only scope.
 

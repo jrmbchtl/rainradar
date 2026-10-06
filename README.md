@@ -136,19 +136,22 @@ window closes itself and the dialog returns.
 The "WeatherNext account" field then shows the signed-in address. To switch
 accounts or re-authorize, repeat step 4 from the options dialog.
 
-### 5. Optional Python packages
+No extra Python packages are needed. WeatherNext 3 data is Zarr v3, which
+Rainradar reads directly over HTTPS, so it works on Home Assistant OS as well as
+Home Assistant Container/Supervised.
 
-Bulk Zarr reads need `zarr` and `obstore`. They are deliberately **not** manifest
-requirements: `numcodecs` (a `zarr` dependency) ships no cp314 musllinux wheel, so
-a hard requirement breaks `pip install` on Alpine-based installs. Install them
-manually:
+### Troubleshooting
 
-```sh
-pip install "zarr>=3.0.0" "obstore>=0.6.0"
-```
+**Google answers `403 access_denied` / the consent screen says the app is not
+verified.** Your OAuth client's consent screen is still in *Testing* status, or
+is unpublished. Open **Google Cloud Console → APIs & Services → OAuth consent
+screen** and either click **Publish app**, or add your own Google account under
+**Test users**. In Testing status, Google also expires refresh tokens after 7
+days — you then have to sign in again, which is expected, not a bug.
 
-Without them every other Rainradar feature still works; WeatherNext 3 logs one
-warning and stays dormant.
+**`403 PermissionDenied` on every forecast request.** Your Google *account* is
+not on the WeatherNext access list yet. Access is granted per account, not per
+project.
 
 ## Dashboard card
 

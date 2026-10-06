@@ -8,9 +8,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from custom_components.rainradar import weathernext as wn, wnauth, wnframes
+from custom_components.rainradar import (
+    weathernext as wn,
+    wnauth,
+    wnframes,
+    wnzarr,
+)
+from custom_components.rainradar.const import WEATHERNEXT_STATS_BUCKET
 
 UTC = UTC
+
+
+@pytest.fixture(autouse=True)
+def verify_cleanup():
+    """Skip the plugin's lingering-thread/timer audit for this module.
+
+    Writing the WN3 fixtures with the real ``zarr`` library spawns an executor
+    thread on the test loop. That is harness noise from the fixture writer, not
+    integration behaviour.
+    """
+    yield
 
 
 def _google_creds() -> dict:
@@ -116,28 +133,21 @@ def test_has_credentials_and_describe():
     assert wnauth.describe(_google_creds()) == "signed_in_as_user@example.com"
 
 
-def test_store_credential_provider_shape():
-    """obstore needs a str token plus a real datetime expiry."""
-    provider = wnauth.store_credential_provider("ya29.token")
-    cred = provider()
-    assert cred["token"] == "ya29.token"
-    assert isinstance(cred["expires_at"], datetime)
-    assert cred["expires_at"] > datetime.now(UTC) + timedelta(minutes=30)
+def test_open_reader_is_authenticated():
+    """Regression: every store read must send a bearer token.
 
-
-def test_open_stats_store_is_authenticated():
-    """Regression: the store must send a bearer token, not read anonymously.
-
-    The bucket is allowlist-protected, so an unauthenticated store can never
-    return data. ``skip_signature=True`` must not be used here — obstore then
-    omits the Authorization header entirely (verified against a local mock).
+    The bucket is allowlist-protected, so an unauthenticated read can never
+    return data. This is the direct replacement for the old obstore store check
+    (``skip_signature=True`` used to suppress the Authorization header entirely).
     """
-    store = wn.open_stats_store(datetime(2026, 9, 6, 6, tzinfo=UTC), "ya29.token")
-    if store is None:
-        pytest.skip("zarr/obstore not installed")
-    assert type(store).__name__ == "GCSStore"
-    assert store.credential_provider is not None
-    assert store.credential_provider()["token"] == "ya29.token"
+    init_dt = datetime(2026, 9, 6, 6, tzinfo=UTC)
+    reader = wn.open_reader(_session_ok(), init_dt, "ya29.token")
+    assert isinstance(reader, wnzarr.RemoteZarrV3)
+    assert reader._headers == {"Authorization": "Bearer ya29.token"}
+    assert reader._base.startswith(
+        f"https://{WEATHERNEXT_STATS_BUCKET}.storage.googleapis.com/"
+    )
+    assert reader._base.endswith("20260906_06hr_00_preds/predictions.zarr")
 
 
 async def test_find_latest_init_walks_back(monkeypatch):
@@ -235,31 +245,290 @@ def test_wnframes_grid_to_rgba():
     assert not (rgba[2, 2, 0] == rgba[2, 2, 1] == rgba[2, 2, 2])
 
 
-def test_zarr_missing_detection(monkeypatch):
-    """zarr_missing() flips correctly based on import availability."""
-    import builtins
+async def _local_wn_store(root, *, lats, lons, values, hours=48):
+    """Write a minimal WN3-shaped Zarr v3 store with the real zarr library.
 
-    real_import = builtins.__import__
+    Variable names follow the documented ``<name>_mean`` / ``<name>_p10`` layout
+    and longitudes use the 0-360 convention, so this exercises name probing,
+    dimension resolution and nearest-cell selection for real.
+    """
+    import zarr
+    from zarr.codecs import ZstdCodec
 
-    def _blocking_import(name, *args, **kwargs):
-        if name == "zarr" or name == "obstore":
-            raise ImportError(f"blocked for test: {name}")
-        return real_import(name, *args, **kwargs)
+    store = zarr.storage.LocalStore(str(root))
+    group = zarr.open_group(store=store, mode="w", zarr_format=3)
+    shape = (hours, len(lats), len(lons))
+    for name, array in values.items():
+        target = group.create_array(
+            name=name,
+            shape=shape,
+            dtype="float32",
+            chunks=(1, min(4, len(lats)), min(4, len(lons))),
+            compressors=[ZstdCodec(level=1)],
+            dimension_names=["lead_time", "latitude", "longitude"],
+            fill_value=np.nan,
+        )
+        target[:] = array
+    for name, coords in (("latitude", lats), ("longitude", lons)):
+        c = group.create_array(
+            name=name,
+            shape=coords.shape,
+            dtype=coords.dtype,
+            dimension_names=[name],
+            fill_value=np.nan,
+        )
+        c[:] = coords
+    # Close so the executor thread does not outlive the test.
+    store.close()
+    return root
 
-    monkeypatch.setattr(builtins, "__import__", _blocking_import)
-    assert wn.zarr_missing() is True
+
+class _StoreReader(wnzarr.RemoteZarrV3):
+    """A :class:`RemoteZarrV3` backed by a local directory."""
+
+    def __init__(self, root) -> None:
+        self._root = root
+        self._headers: dict = {}
+        self._meta_cache: dict = {}
+
+    def _url(self, path: str) -> str:
+        return str(self._root / path.lstrip("/"))
+
+    async def _get_json(self, path: str) -> dict:
+        import json
+
+        target = self._root / path
+        if not target.is_file():
+            raise wnzarr.MissingArrayError(f"{path}: HTTP 404")
+        return json.loads(target.read_text())
+
+    async def _get_whole(self, path: str) -> bytes:
+        target = self._root / path.lstrip("/")
+        return target.read_bytes() if target.is_file() else b""
+
+    async def _get_range(self, path: str, start: int, length: int) -> bytes:
+        target = self._root / path.lstrip("/")
+        if not target.is_file():
+            return b""
+        with target.open("rb") as fh:
+            fh.seek(start)
+            return fh.read(length)
+
+    async def _get_tail(self, path: str, length: int) -> bytes:
+        target = self._root / path.lstrip("/")
+        if not target.is_file():
+            return b""
+        with target.open("rb") as fh:
+            fh.seek(max(0, target.stat().st_size - length))
+            return fh.read()
 
 
-async def test_fetch_point_forecast_returns_none_when_zarr_missing(caplog):
-    """Without zarr, point extraction returns None and warns once."""
-    import logging
+async def test_fetch_point_forecast_reads_a_real_store(tmp_path, monkeypatch):
+    """End-to-end: parse a Zarr store into the internal forecast shape."""
+    lats = np.linspace(50.0, 54.0, 41, dtype="float32")  # 0.1° grid
+    lons = np.linspace(6.0, 10.0, 41, dtype="float32")  # 0-360 convention
+    hours = 4
+    shape = (hours, len(lats), len(lons))
 
-    with patch.object(wn, "zarr_missing", return_value=True), patch.object(
-        wn, "_ZARR_WARNED", False
+    temp = np.full(shape, 293.15, dtype="float32")
+    precip = np.full(shape, 0.002, dtype="float32")  # 2 mm/h in metres
+    # A recognisable gradient so picking the wrong cell is visible.
+    temp[:, :, :] += np.arange(shape[1], dtype="float32")[None, :, None] * 0.1
+
+    store_root = await _local_wn_store(
+        tmp_path / "wn.zarr",
+        lats=lats,
+        lons=lons,
+        hours=hours,
+        values={
+            "temperature_2m_mean": temp,
+            "temperature_2m_p10": temp - 1.0,
+            "temperature_2m_p90": temp + 1.0,
+            "total_precipitation_1hr_mean": precip,
+        },
+    )
+    monkeypatch.setattr(
+        wn, "open_reader", lambda *a, **k: _StoreReader(store_root)
+    )
+
+    init_dt = datetime(2026, 9, 6, 6, tzinfo=UTC)
+    result = await wn.fetch_point_forecast(
+        _session_ok(), "tok", init_dt, 52.0, 8.0, hours=hours
+    )
+
+    assert result is not None
+    hourly = result["hourly"]
+    assert len(hourly) == hours
+    # Timestamps run init+1h .. init+4h.
+    assert hourly[0]["ts"] == (init_dt + timedelta(hours=1)).timestamp()
+    assert hourly[-1]["ts"] == (init_dt + timedelta(hours=hours)).timestamp()
+
+    i_lat = int(np.abs(lats - 52.0).argmin())
+    expected_temp = round(float(temp[0, i_lat, :].mean()) - 273.15, 1)
+    assert hourly[0]["temperature"] == expected_temp
+    # m → mm
+    assert hourly[0]["precipitation"] == 2.0
+
+    stats = result["hourly_stats"]
+    assert set(stats) == {"p10", "p90"}
+    assert stats["p10"][0]["temperature"] == pytest.approx(expected_temp - 1.0, abs=0.05)
+    assert stats["p90"][0]["temperature"] == pytest.approx(expected_temp + 1.0, abs=0.05)
+
+
+async def test_lon_180_is_not_wrapped(tmp_path, monkeypatch):
+    """A store using -180..180 must not have its longitudes forced to 0..360.
+
+    Converting unconditionally would wrap 180 -> 180 (fine by luck) but, worse,
+    would break a -180..180 grid wherever it disagreed with the 0-360
+    convention. Both layouts must resolve to the cell the user actually means.
+    """
+    lats = np.array([51.0, 52.0, 53.0], dtype="float32")
+    lons = np.array([-2.0, -1.0, 0.0], dtype="float32")  # -180..180 convention
+    shape = (2, len(lats), len(lons))
+    data = np.zeros(shape, dtype="float32")
+    data[:, 1, 1] = 293.15  # lat 52, lon -1
+
+    root = await _local_wn_store(
+        tmp_path / "signed.zarr",
+        lats=lats,
+        lons=lons,
+        hours=2,
+        values={"temperature_2m_mean": data},
+    )
+    monkeypatch.setattr(wn, "open_reader", lambda *a, **k: _StoreReader(root))
+
+    # A negative longitude must resolve against the store's own convention.
+    # Wrapping it to 359 would land on the far edge of a 0..360 grid instead.
+    result = await wn.fetch_point_forecast(
+        _session_ok(), "tok", datetime(2026, 9, 6, 6, tzinfo=UTC), 52.0, -1.0, hours=2
+    )
+    assert result is not None
+    assert result["hourly"][0]["temperature"] == 20.0
+
+
+async def test_lon_0_360_convention_wraps(tmp_path, monkeypatch):
+    """A 0..360 store must wrap a negative longitude into range."""
+    lats = np.array([51.0, 52.0, 53.0], dtype="float32")
+    lons = np.array([0.0, 180.0, 359.0], dtype="float32")  # 0..360 convention
+    shape = (2, len(lats), len(lons))
+    data = np.zeros(shape, dtype="float32")
+    data[:, 1, 2] = 288.15  # lat 52, lon 359 (== -1)
+
+    root = await _local_wn_store(
+        tmp_path / "wrapped.zarr",
+        lats=lats,
+        lons=lons,
+        hours=2,
+        values={"temperature_2m_mean": data},
+    )
+    monkeypatch.setattr(wn, "open_reader", lambda *a, **k: _StoreReader(root))
+
+    result = await wn.fetch_point_forecast(
+        _session_ok(), "tok", datetime(2026, 9, 6, 6, tzinfo=UTC), 52.0, -1.0, hours=2
+    )
+    assert result is not None
+    assert result["hourly"][0]["temperature"] == 15.0
+
+
+async def test_resolve_falls_back_to_the_bare_variable_name(
+    tmp_path, monkeypatch
+):
+    """Some stores publish ``<name>`` instead of ``<name>_mean``."""
+    lats = np.array([52.0], dtype="float32")
+    lons = np.array([8.0], dtype="float32")
+    data = np.full((1, 1, 1), 283.15, dtype="float32")
+
+    root = await _local_wn_store(
+        tmp_path / "bare.zarr",
+        lats=lats,
+        lons=lons,
+        hours=1,
+        values={"temperature_2m": data},
+    )
+    reader = _StoreReader(root)
+
+    assert await wn._resolve(reader, "temperature_2m_mean") is None
+    resolved = await wn._resolve(reader, "temperature_2m_mean", "temperature_2m")
+    assert resolved is not None
+    assert resolved[0] == "temperature_2m"
+
+
+async def test_fetch_point_forecast_handles_bare_variable_names(
+    tmp_path, monkeypatch
+):
+    """End-to-end with a store that only publishes ``<name>`` (no ``_mean``).
+
+    Exercises the probe in ``fetch_point_forecast`` itself; the unit test on
+    ``_resolve`` would not catch a call site that stopped passing the fallback.
+    """
+    lats = np.array([52.0], dtype="float32")
+    lons = np.array([8.0], dtype="float32")
+    data = np.full((1, 1, 1), 283.15, dtype="float32")
+
+    root = await _local_wn_store(
+        tmp_path / "bare-e2e.zarr",
+        lats=lats,
+        lons=lons,
+        hours=1,
+        values={"temperature_2m": data},
+    )
+    monkeypatch.setattr(wn, "open_reader", lambda *a, **k: _StoreReader(root))
+
+    result = await wn.fetch_point_forecast(
+        _session_ok(), "tok", datetime(2026, 9, 6, 6, tzinfo=UTC), 52.0, 8.0, hours=1
+    )
+    assert result is not None
+    assert result["hourly"][0]["temperature"] == 10.0
+
+
+async def test_fetch_point_forecast_passes_the_token_to_the_reader(monkeypatch):
+    """The reader must be authenticated; the bucket rejects anonymous reads."""
+    seen: dict = {}
+
+    def _capture(session, init_dt, token):
+        seen["token"] = token
+        return wnzarr.RemoteZarrV3(session, "https://example.invalid", token)
+
+    monkeypatch.setattr(wn, "open_reader", _capture)
+
+    # No store at the (fake) base URL -> every probe 404s, but we still get here.
+    with patch.object(
+        wn, "_resolve", AsyncMock(return_value=None)
     ):
-        with caplog.at_level(logging.WARNING, logger="custom_components.rainradar.weathernext"):
-            result = await wn.fetch_point_forecast(
-                _session_ok(), "tok", datetime(2026, 9, 6, 6, tzinfo=UTC), 52.0, 9.7
-            )
+        result = await wn.fetch_point_forecast(
+            _session_ok(), "ya29.the-token",
+            datetime(2026, 9, 6, 6, tzinfo=UTC), 52.0, 8.0,
+        )
+
     assert result is None
-    assert any("optional packages 'zarr'" in r.message for r in caplog.records)
+    assert seen["token"] == "ya29.the-token"
+
+
+async def test_fetch_point_forecast_requires_a_token():
+    """No credentials means no reads at all."""
+    result = await wn.fetch_point_forecast(
+        _session_ok(), None, datetime(2026, 9, 6, 6, tzinfo=UTC), 52.0, 8.0
+    )
+    assert result is None
+
+
+async def test_fetch_point_forecast_handles_an_empty_store(tmp_path, monkeypatch):
+    """A store with none of our variables must warn, not raise."""
+    import zarr
+
+    group = zarr.open_group(
+        store=zarr.storage.LocalStore(str(tmp_path)), mode="w", zarr_format=3
+    )
+    group.create_array(
+        name="something_else",
+        shape=(2, 2, 2),
+        dtype="float32",
+        dimension_names=["lead_time", "latitude", "longitude"],
+        fill_value=np.nan,
+    )
+    monkeypatch.setattr(wn, "open_reader", lambda *a, **k: _StoreReader(tmp_path))
+
+    result = await wn.fetch_point_forecast(
+        _session_ok(), "tok", datetime(2026, 9, 6, 6, tzinfo=UTC), 52.0, 8.0
+    )
+    assert result is None

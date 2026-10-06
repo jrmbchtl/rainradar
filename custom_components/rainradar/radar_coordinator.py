@@ -353,89 +353,72 @@ class RadarDataCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _generate_wn_frames(self) -> dict[str, list[dict]] | None:
         """Render WN3 global precipitation frames (48h @ 1h steps).
 
-        Reuses the WeatherNext coordinator's already-fetched dataset when
-        present; renders lazily so an overlay failure never blocks DWD frames.
+        Reads the statistics bucket directly over HTTPS (see :mod:`.wnzarr`).
+        Renders lazily so an overlay failure never blocks DWD frames.
         """
         if not self._wn_frames_enabled:
             return None
         from . import weathernext as wn
 
-        if wn.zarr_missing():
-            return None
         runtime = self.entry.runtime_data
         wn_coord = getattr(runtime, "weathernext_coordinator", None) if runtime else None
         if wn_coord is None or not wn_coord.last_update_success or not wn_coord.data:
             return None
 
-        from . import wnframes
+        import numpy as np
+
+        from . import wnframes, wnzarr
         from .wnauth import get_access_token
 
-        # The render closure below runs in a worker thread, so mint the access
-        # token here in the event loop and pass it in.
+        init_iso = wn_coord.data.get("init_time")
+        if not init_iso:
+            return None
+        init_dt = datetime.fromisoformat(init_iso)
+
         token = await get_access_token(await self._async_wn_credentials(), self._session)
         if not token:
             return None
 
-        def _render() -> dict[str, list[dict]] | None:
-            from datetime import timedelta as _td
-
-            import numpy as np
-            import xarray as xr
-            import zarr as zarr_mod
-
-            init_iso = wn_coord.data.get("init_time")
-            if not init_iso:
-                return None
-            init_dt = datetime.fromisoformat(init_iso)
-            store = wn.open_stats_store(init_dt, token)
-            if store is None:
-                return None
-            ds = xr.open_zarr(zarr_mod.storage.ObjectStore(store), chunks={})
-            var = "experimental_tp_1hr_mean"
-            if var not in ds:
-                var = "imerg_tp_1hr_mean"
-            if var not in ds:
-                return None
-
-            lat_name = next(d for d in ds[var].dims if d.startswith("lat"))
-            lon_name = next(d for d in ds[var].dims if d.startswith("lon"))
-
-            frames: list[dict] = []
-            # 48 hourly steps; sub-select to keep rendering sane (every step).
-            for step in range(48):
-                ts = (init_dt + _td(hours=step + 1)).timestamp()
-                if ts < datetime.now(UTC).timestamp() - 3600:
-                    continue
-                stamp = datetime.fromtimestamp(ts, tz=UTC).strftime(
-                    "%Y-%m-%dT%H-%M-%SZ"
-                )
-                path = self._cache_dir / "weathernext" / (
-                    safe_frame_filename(stamp)
-                )
-                if path.is_file():
-                    frames.append(
-                        {"ts": stamp, "url": f"{self._url_prefix}/weathernext/{path.name}"}
-                    )
-                    continue
-                sub = ds[var].isel(
-                    {d: 0 for d in ds[var].dims if d not in (lat_name, lon_name)}
-                )
-                grid = sub.values
-                if grid.ndim != 2:
-                    continue
-                vals = np.nan_to_num(grid * 1000.0, nan=-1.0)  # m → mm/h
-                rgba = wnframes.grid_to_rgba(vals)
-                wnframes.save_frame_png(path, rgba)
-                frames.append(
-                    {"ts": stamp, "url": f"{self._url_prefix}/weathernext/{path.name}"}
-                )
-            return {"nowcast": frames, "past": [], "layer": "weathernext"}
-
-        try:
-            return await asyncio.to_thread(_render)
-        except Exception as exc:
-            _LOGGER.debug("WN3 overlay rendering skipped: %s", exc)
+        reader = wn.open_reader(self._session, init_dt, token)
+        # Precipitation candidates, best first.
+        resolved = None
+        for candidate in ("experimental_tp_1hr_mean", "imerg_tp_1hr_mean"):
+            resolved = await wn._resolve(reader, candidate)
+            if resolved is not None:
+                break
+        if resolved is None:
+            _LOGGER.debug("WN3 overlay: no precipitation variable in the store")
             return None
+        var = resolved[0]
+
+        frames: list[dict] = []
+        now_ts = datetime.now(UTC).timestamp()
+        for step in range(48):
+            ts = (init_dt + timedelta(hours=step + 1)).timestamp()
+            if ts < now_ts - 3600:
+                continue
+            stamp = datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H-%M-%SZ")
+            path = self._cache_dir / "weathernext" / (safe_frame_filename(stamp))
+            if not path.is_file():
+                try:
+                    grid = await wnzarr.read_plane(reader, var, lead_index=step)
+                except (TimeoutError, wnzarr.WNZarrError, aiohttp.ClientError) as exc:
+                    _LOGGER.debug("WN3 overlay frame %s skipped: %s", stamp, exc)
+                    continue
+                if grid is None or grid.ndim != 2:
+                    continue
+                # m → mm/h, then render off the event loop: a global 0.1° grid
+                # is ~26 MB and the colour ramp is pure numpy/PIL CPU work.
+                vals = np.nan_to_num(grid * 1000.0, nan=-1.0)
+                await asyncio.to_thread(
+                    wnframes.save_frame_png,
+                    path,
+                    await asyncio.to_thread(wnframes.grid_to_rgba, vals),
+                )
+            frames.append(
+                {"ts": stamp, "url": f"{self._url_prefix}/weathernext/{path.name}"}
+            )
+        return {"nowcast": frames, "past": [], "layer": "weathernext"}
 
 
     @staticmethod

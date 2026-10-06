@@ -57,12 +57,8 @@ class WeatherNextCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not locations:
             return {"locations": {}, "init_time": None}
 
-        if wn.zarr_missing():
-            # zarr/obstore cannot be auto-installed on every platform (musl).
-            # Dormant mode: the one-time warning is logged by _warn_zarr_missing;
-            # park the coordinator with empty data and no polling failure spam.
-            self.update_interval = timedelta(seconds=WEATHERNEXT_UPDATE_INTERVAL * 24)
-            wn._warn_zarr_missing()
+        if not self._credentials:
+            # No Google account signed in yet; nothing to poll for.
             return {"locations": {}, "init_time": None}
 
         token = await wnauth.get_access_token(self._credentials, self._session)

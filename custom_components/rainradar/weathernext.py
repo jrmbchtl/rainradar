@@ -19,11 +19,12 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 import logging
+import math
 from typing import Any
 
 import aiohttp
 
-from . import wnauth
+from . import wnauth, wnzarr
 from .const import (
     WEATHERNEXT_DISCOVERY_BACKOFF_HOURS,
     WEATHERNEXT_INTERIM_LAG_MIN,
@@ -81,25 +82,125 @@ def _stats_object_url(init_dt: datetime, key: str = "zarr.json") -> str:
     )
 
 
-def open_stats_store(init_dt: datetime, access_token: str):
-    """Open an authenticated obstore GCS store for one WN3 init.
+def stats_base_url(init_dt: datetime) -> str:
+    """HTTPS base URL of one init's ``predictions.zarr`` folder.
 
-    Returns None when the optional zarr/obstore packages are unavailable.
-
-    Do not pass ``skip_signature``: obstore then omits the Authorization header
-    and every read falls back to anonymous, which the allowlist-protected bucket
-    rejects with a 403.
+    Reads go straight over HTTPS with an ``Authorization: Bearer`` header. No
+    ``obstore``/``zarr`` dependency: ``zarr`` pulls in ``numcodecs``, which has
+    no musllinux wheels for CPython 3.11+, so it cannot be a hard requirement
+    without breaking installs on HA OS. See :mod:`.wnzarr`.
     """
-    if zarr_missing():
-        _warn_zarr_missing()
+    return (
+        f"https://{WEATHERNEXT_STATS_BUCKET}.storage.googleapis.com/"
+        f"{_stats_prefix(init_dt)}"
+    )
+
+
+def open_reader(
+    session: aiohttp.ClientSession, init_dt: datetime, token: str | None
+) -> wnzarr.RemoteZarrV3:
+    """Open a Zarr v3 reader for one WN3 init."""
+    return wnzarr.RemoteZarrV3(session, stats_base_url(init_dt), token)
+
+
+async def _resolve(
+    reader: wnzarr.RemoteZarrV3, *candidates: str
+) -> tuple[str, wnzarr.ArrayMeta] | None:
+    """Return the first candidate array that exists in the store.
+
+    WN3 publishes surface variables as ``<name>_mean``; older/alternate layouts
+    use the bare ``<name>``. Probe rather than guess so both work.
+    """
+    for name in candidates:
+        try:
+            return name, await reader.array_meta(name)
+        except wnzarr.MissingArrayError:
+            continue
+        except (TimeoutError, wnzarr.WNZarrError, aiohttp.ClientError) as exc:
+            _LOGGER.debug("WeatherNext probe of %s failed: %s", name, exc)
+            return None
+    return None
+
+
+async def _coordinate(
+    reader: wnzarr.RemoteZarrV3, *names: str
+) -> Any:
+    """Read a 1-D coordinate array, trying each candidate name in turn."""
+    tried: list[str] = []
+    for candidate in names:
+        if not candidate or candidate in tried:
+            continue
+        tried.append(candidate)
+        try:
+            values = await reader.coordinate(candidate)
+        except wnzarr.MissingArrayError:
+            continue
+        except (TimeoutError, wnzarr.WNZarrError, aiohttp.ClientError) as exc:
+            _LOGGER.debug("WeatherNext coordinate %s failed: %s", candidate, exc)
+            return None
+        if values is not None and values.ndim == 1:
+            return values
+    return None
+
+
+async def _lat_lon_coordinates(
+    reader: wnzarr.RemoteZarrV3, meta: wnzarr.ArrayMeta
+) -> tuple[Any, Any] | None:
+    """Fetch the grid's latitude and longitude coordinate arrays.
+
+    Coordinate array names are usually the dimension names, but fall back to
+    the common aliases so an unexpected layout still resolves.
+    """
+    dims = wnzarr.grid_dims(meta)
+    if dims is None:
+        return None
+    lat_i, lon_i, _ = dims
+
+    lat_values = await _coordinate(
+        reader, meta.dimension_names[lat_i] or "", "latitude", "lat"
+    )
+    if lat_values is None:
+        _LOGGER.warning(
+            "WeatherNext: no latitude coordinate array in the store (tried the "
+            "dimension name plus 'latitude'/'lat'); point forecasts need one"
+        )
         return None
 
-    import obstore
+    lon_values = await _coordinate(
+        reader, meta.dimension_names[lon_i] or "", "longitude", "lon"
+    )
+    if lon_values is None:
+        _LOGGER.warning(
+            "WeatherNext: no longitude coordinate array in the store (tried the "
+            "dimension name plus 'longitude'/'lon'); point forecasts need one"
+        )
+        return None
 
-    return obstore.store.GCSStore(
-        WEATHERNEXT_STATS_BUCKET,
-        prefix=_stats_prefix(init_dt),
-        credential_provider=wnauth.store_credential_provider(access_token),
+    return lat_values, lon_values
+
+
+async def _nearest_grid(
+    reader: wnzarr.RemoteZarrV3, meta: wnzarr.ArrayMeta, lat: float, lon: float
+) -> tuple[int, int] | None:
+    """Nearest grid indices for a location, honouring WN3's 0-360 longitudes."""
+    import numpy as np
+
+    coordinates = await _lat_lon_coordinates(reader, meta)
+    if coordinates is None:
+        return None
+    lat_values, lon_values = coordinates
+
+    # Detect the longitude convention from the data instead of assuming: WN3
+    # uses 0..360, but converting unconditionally would be wrong for a
+    # -180..180 grid and would silently pick a far-away cell.
+    target_lon = float(lon)
+    finite = lon_values[np.isfinite(lon_values)]
+    if finite.size and finite.min() >= -1e-6:
+        target_lon = _lon360(lon)
+
+    return (
+        wnzarr.nearest_index(lat_values, lat),
+        wnzarr.nearest_index(lon_values, target_lon),
     )
 
 
@@ -149,10 +250,6 @@ async def preflight(
     credentials: dict[str, Any],
 ) -> str | None:
     """Validate credentials + allowlist. Returns an error string, or None if OK."""
-    if zarr_missing():
-        # Credentials may still be valid; surface the zarr situation so users
-        # aren't surprised when forecasts don't appear.
-        _warn_zarr_missing()
     if not wnauth.has_credentials(credentials):
         return "sign_in_required"
     token = await wnauth.get_access_token(credentials, session)
@@ -207,43 +304,47 @@ async def fetch_point_forecast(
     where hourly entries mirror the internal forecast dict shape (ts, temperature,
     precipitation, wind_speed, cloud_cover, solar GHI/direct, ...). None on error.
 
-    Requires the optional ``zarr`` + ``obstore`` packages (not manifest
-    requirements — see ``zarr_missing``). Returns None with a one-time warning
-    when they are unavailable.
+    Reads Zarr v3 over HTTPS via :mod:`.wnzarr` — no zarr/obstore dependency.
     """
     if not token:
         return None
-    store = open_stats_store(init_dt, token)
-    if store is None:
-        return None
 
-    def _extract() -> dict[str, list[dict]] | None:
-        import xarray as xr
-        import zarr as zarr_mod
+    reader = open_reader(session, init_dt, token)
 
-        zstore = zarr_mod.storage.ObjectStore(store)
-        ds = xr.open_zarr(zstore, chunks={})
+    try:
+        # Learn the grid layout and the nearest cell from any variable we know.
+        probe = await _resolve(reader, "temperature_2m_mean", "temperature_2m")
+        if probe is None:
+            _LOGGER.warning(
+                "WeatherNext: no known variables found in %s", _stats_prefix(init_dt)
+            )
+            return None
+        grid = await _nearest_grid(reader, probe[1], lat, lon)
+        if grid is None:
+            return None
+        lat_index, lon_index = grid
 
-        sel_lon = _lon360(lon)
         result: dict[str, list[dict]] = {"hourly": [], "hourly_stats": {}}
+
+        async def _series(name: str) -> Any:
+            return await wnzarr.read_series(
+                reader, name, lat_index, lon_index, 0, hours
+            )
 
         # Station head (0.05°) — station-calibrated temperature + dew point.
         for var in WN_STATION_VARS:
-            if var not in ds:
+            resolved = await _resolve(reader, f"{var}_mean", var)
+            if resolved is None:
                 continue
-            ds_var = ds[var]
-            lat_name = next(d for d in ds_var.dims if d.startswith("lat"))
-            lon_name = next(d for d in ds_var.dims if d.startswith("lon"))
-            point = ds_var.sel(
-                {lat_name: lat, lon_name: sel_lon}, method="nearest"
-            )
-            vals = point.values[:hours]
+            vals = await _series(resolved[0])
+            if vals is None:
+                continue
             dst = "temperature" if var == "station_head_temperature_2m" else "dew_point"
             for i, v in enumerate(vals):
                 if i >= len(result["hourly"]):
                     result["hourly"].append({})
                 try:
-                    if v is None or v != v or v < -900:
+                    if v != v or v < -900:  # NaN or WN3's missing sentinel
                         continue
                     result["hourly"][i][dst] = round(float(v) - 273.15, 1)
                 except (TypeError, ValueError):
@@ -251,41 +352,38 @@ async def fetch_point_forecast(
 
         # 0.1° surface variables.
         for var in WN_SURFACE_VARS:
-            if var not in ds:
-                continue
-            ds_var = ds[var]
-            lat_name = next(d for d in ds_var.dims if d.startswith("lat"))
-            lon_name = next(d for d in ds_var.dims if d.startswith("lon"))
-            point = ds_var.sel(
-                {lat_name: lat, lon_name: sel_lon}, method="nearest"
-            )
-            mean_vals = point.values[:hours]
             dst_key = _surface_dst(var)
             if dst_key is None:
+                continue
+            resolved = await _resolve(reader, f"{var}_mean", var)
+            if resolved is None:
+                continue
+            mean_vals = await _series(resolved[0])
+            if mean_vals is None:
                 continue
             for i, v in enumerate(mean_vals):
                 if i >= len(result["hourly"]):
                     result["hourly"].append({})
                 try:
-                    if v is None or v != v or v < -900:
+                    if v != v or v < -900:
                         continue
                     result["hourly"][i][dst_key] = _surface_convert(var, float(v))
                 except (TypeError, ValueError):
                     continue
-            for suffix, stat_key in (("p10", "p10"), ("p90", "p90")):
-                stat_name = f"{var}_{suffix}"
-                if stat_name not in ds:
+
+            for suffix in ("p10", "p90"):
+                stat_resolved = await _resolve(reader, f"{var}_{suffix}")
+                if stat_resolved is None:
                     continue
-                stat_point = ds[stat_name].sel(
-                    {lat_name: lat, lon_name: sel_lon}, method="nearest"
-                )
-                stat_vals = stat_point.values[:hours]
-                bucket = result["hourly_stats"].setdefault(stat_key, [])
+                stat_vals = await _series(stat_resolved[0])
+                if stat_vals is None:
+                    continue
+                bucket = result["hourly_stats"].setdefault(suffix, [])
                 for i, v in enumerate(stat_vals):
                     if i >= len(bucket):
                         bucket.append({})
                     try:
-                        if v is None or v != v or v < -900:
+                        if v != v or v < -900:
                             continue
                         bucket[i][dst_key] = _surface_convert(var, float(v))
                     except (TypeError, ValueError):
@@ -309,14 +407,12 @@ async def fetch_point_forecast(
             u100 = entry.pop("u100_raw", None)
             v100 = entry.pop("v100_raw", None)
             if u100 is not None and v100 is not None:
-                import math
-
-                entry["wind_direction_100m"] = round((270.0 - math.degrees(math.atan2(v100, u100))) % 360.0, 0)
+                entry["wind_direction_100m"] = round(
+                    (270.0 - math.degrees(math.atan2(v100, u100))) % 360.0, 0
+                )
         return result
 
-    try:
-        return await asyncio.to_thread(_extract)
-    except Exception as exc:
+    except (TimeoutError, wnzarr.WNZarrError, aiohttp.ClientError) as exc:
         _LOGGER.warning("WeatherNext point extraction failed: %s", exc)
         return None
 
@@ -368,37 +464,3 @@ def _surface_convert(var: str, value: float) -> float:
     if var == "mean_sea_level_pressure":
         return round(value / 100.0, 1)
     return round(value, 2)
-
-
-def zarr_missing() -> bool:
-    """True when the zarr/obstore dependency pair is unavailable.
-
-    These are deliberately NOT manifest requirements: ``numcodecs`` (pulled in
-    by zarr) ships no cp314 musllinux wheel, so a hard requirement breaks pip
-    install entirely on musl-based HA deployments (Alpine containers).
-    Power users can install them manually to enable WN3.
-    """
-    try:
-        import obstore  # noqa: F401
-        import zarr  # noqa: F401
-
-        return False
-    except ImportError:
-        return True
-
-
-_ZARR_WARNED = False
-
-
-def _warn_zarr_missing() -> None:
-    """Log the zarr hint once per HA process, at WARNING level."""
-    global _ZARR_WARNED
-    if _ZARR_WARNED:
-        return
-    _ZARR_WARNED = True
-    _LOGGER.warning(
-        "WeatherNext 3 is enabled but the optional packages 'zarr' and "
-        "'obstore' are not installed (they cannot be auto-installed on all "
-        "platforms). Install them manually via pip to enable WN3 forecasts; "
-        "all other Rainradar features work without them."
-    )

@@ -11,15 +11,15 @@ Two shapes of credential are understood, both living in the private
 ``wn_service_account_info``
     Legacy. A service-account JSON key, used before the OAuth flow existed.
 
-The access token is only used for the Cloud Storage JSON API probe in
-``find_latest_init`` / ``preflight``. Bulk Zarr reads go through obstore, which
-takes the token via a credential provider (see ``wn.store_credential_provider``).
+The access token is used for every request to the allowlist-protected
+statistics bucket: the discovery probe in ``find_latest_init`` / ``preflight``
+and the Zarr reads in :mod:`.wnzarr`, which send it as a Bearer header.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 import logging
 import time
 from typing import Any
@@ -168,26 +168,3 @@ async def _access_token_from_service_account(
     )
     _TOKEN_CACHE[client_email] = (time.monotonic() + max(ttl, 60), token)
     return token
-
-
-def store_credential_provider(access_token: str):
-    """Build an obstore ``GCSCredentialProvider`` for an access token.
-
-    obstore requires ``{"token": str, "expires_at": datetime}`` — a float or
-    ``None`` expiry raises inside the Rust layer, and ``skip_signature`` must
-    NOT be used: it suppresses the Authorization header entirely, so every read
-    silently falls back to anonymous and fails with a 403.
-
-    The token used for a Zarr read is minted immediately before that read, so
-    this hands obstore a conservative "valid for an hour" claim and lets
-    :func:`get_access_token`'s cache own the real refresh timing. The provider
-    is a plain closure rather than a refresh callback on purpose: a callback
-    that hit Google on every invocation would add an HTTP round trip per chunk
-    read.
-    """
-    expires_at = datetime.now(UTC) + timedelta(hours=1)
-
-    def _provider() -> dict[str, Any]:
-        return {"token": access_token, "expires_at": expires_at}
-
-    return _provider

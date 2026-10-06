@@ -13,8 +13,8 @@ xarray
 scipy
 numpy==2.3.2
 pandas==2.3.3
-# WeatherNext 3 optional extras — NOT in manifest requirements (numcodecs ships no
-# cp314 musllinux wheel, which breaks pip install on musl-based HA deployments).
-# The dev environment can install them to exercise the zarr code paths.
+# WeatherNext 3 test fixtures are WRITTEN with the real zarr library so
+# tests/test_wnzarr.py can prove the dependency-free reader in wnzarr.py
+# (used in production) decodes real zarr output — including sharding.
+# zarr is a TEST dependency only; nothing the integration ships needs it.
 zarr>=3.0.0
-obstore>=0.6.0
